@@ -141,17 +141,17 @@ def register_dwi_series(data, gtab, b0_ref=0, pipeline=None, denoise=True,
 def main(args):
 
     # set filename
-    flnm = utils.Filename(args.filename)
+    flnm = utils.Filename(args.filename, args.bfile, args.ext)
 
     # set slice
     slice_index = args.slice
 
     # load data (could load with sitk and convert to NumPy)
     data, affine, img = load_nifti(flnm.filename, return_img = True)
-    data = data[:, :, slice_index, :]
+    data = data[:, :, slice_index, :].astype(np.float64)
 
     # load bdata
-    bvals, bvecs = read_bvals_bvecs(flnm.bval(), flnm.bvec())
+    bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
     gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
 
     # create a mask
@@ -170,7 +170,7 @@ def main(args):
                                        denoise=True, static_mask=mask,\
                                        verbose=args.verbose)
 
-        save_nifti(flnm.new("test_reg_" + str(slice_index)), reg_data, affine)
+        save_nifti(flnm.new("reg_" + str(slice_index)), reg_data, affine)
 
 
 if __name__ == "__main__":
@@ -180,10 +180,16 @@ if __name__ == "__main__":
     parser.add_argument("-f", "--filename", type = str, required = True,
                         help = "Name of NIFTI file")
 
+    parser.add_argument("--ext", type = str, required = False, default = "nii",
+                        choices = ["nii", "nii.gz"], help = "Extension for saved files")
+
+    parser.add_argument("-b", "--bfile", type = str, required = True,
+                        help = "Name of bval/bvec file, without extension")
+
     parser.add_argument("-s", "--slice", type = int, required = True,
                         help = "Slice index")
 
-    parser.add_argument("-b", "--b0ref", type = int, required = False, default = 0,
+    parser.add_argument("--b0ref", type = int, required = False, default = 0,
                         help = "index of b0 images to use as reference image")
 
     parser.add_argument("-r", "--reg", required = False, default = False,

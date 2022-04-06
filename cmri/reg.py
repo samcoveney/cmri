@@ -40,12 +40,28 @@ def affine_registration_sitkimage(moving, static,
     if pipeline in [None, []]:
         pipeline = ["rigid"]
     parameterMapVector = sitk.VectorOfParameterMap() 
-    for pdx in pipeline:
-        parameterMapVector.append(sitk.GetDefaultParameterMap(pdx))
+    for pdx, pl in enumerate(pipeline):
+        parameterMapVector.append(sitk.GetDefaultParameterMap(pl))
     elastixImageFilter.SetParameterMap(parameterMapVector)
+
+    # NOTE: should the settings below be applied for each pipeline item?
 
     # useless for our 2D slice data...
     elastixImageFilter.SetParameter('UseDirectionCosines', 'false')
+
+    # mask is region of interest
+    elastixImageFilter.SetParameter('ErodeMask', 'false')
+
+    # do not align by geometrical centers
+    elastixImageFilter.SetParameter('AutomaticTransformInitialization', 'false')
+
+    elastixImageFilter.SetParameter('NumberOfResolutions', '3')
+
+    # it always seems to reach this... so not converging
+    #elastixImageFilter.SetParameter('MaximumNumberOfIterations', '1000')
+
+    #import IPython
+    #IPython.embed()
 
     if not(verbose):
         elastixImageFilter.LogToConsoleOff()
@@ -53,6 +69,9 @@ def affine_registration_sitkimage(moving, static,
     elastixImageFilter.Execute()
     resampled = elastixImageFilter.GetResultImage()
     params = elastixImageFilter.GetTransformParameterMap()
+
+    #import IPython
+    #IPython.embed()
 
     return resampled, params
 

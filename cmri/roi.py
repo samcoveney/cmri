@@ -35,3 +35,39 @@ class create_mask:
         mask = ellipse.contains_points(self.MYDATA.T)
         self.mask = mask.reshape(self.img_shape).astype(np.int32)
 
+
+class select_point:
+    """Select a coordinate by clicking on an image."""
+
+    def __init__(self, img, vmin=None, vmax=None):
+
+        self.img = img
+        self.vmin = self.img.min() if vmin is None else vmin
+        self.vmax = self.img.max() if vmax is None else vmax
+        self.x = None
+        self.y = None
+
+
+    def run(self):
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+
+        ax.imshow(self.img.T, cmap="turbo", vmin=self.vmin, vmax=self.vmax)
+        ax.set_title("Click on LV center, close when done")
+
+        self.point = None
+
+        def onclick(event):
+            print('button=%d, x=%d, y=%d, xdata=%f, ydata=%f' %
+                  (event.button, event.x, event.y, event.xdata, event.ydata))
+            if self.point is not None:
+                self.point[0].remove()
+            self.point = plt.plot(event.xdata, event.ydata, 'o', color = 'red')
+            self.x, self.y = event.xdata, event.ydata
+            fig.canvas.draw()
+
+        cid = fig.canvas.mpl_connect('button_press_event', onclick)
+        plt.show()
+
+        return self.x, self.y
+

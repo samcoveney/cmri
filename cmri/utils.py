@@ -9,20 +9,21 @@ class Filename():
        flnm.new("registered_" + str(sliceNum))
     """
 
-    def __init__(self, filename):
+    def __init__(self, filename, bfile, ext):
 
         self.filename = filename
+        self.bfile = bfile
+        self.ext = ext
         self.head, tail = os.path.split(filename)
-        self.tail, self.ext = tail.split('.')[0], '.'.join(tail.split('.')[1:]) 
+        self.tail = tail.split('.')[0]
 
-    def new(self, x):
-        return os.path.join(self.head, self.tail + "_" + x + "." + self.ext)
+        self.bval = os.path.join(self.head, self.bfile + ".bval")
+        self.bvec = os.path.join(self.head, self.bfile + ".bvec")
 
-    def bval(self):
-        return os.path.join(self.head, self.tail + ".bval")
-
-    def bvec(self):
-        return os.path.join(self.head, self.tail + ".bvec")
+    def new(self, x, ext=None):
+        if ext is None:
+            ext = self.ext
+        return os.path.join(self.head, self.tail + "_" + x + "." + ext)
 
 
 def progress_bar(iteration, total, prefix = '', suffix = '', decimals = 0, length = 20, fill = '#'):

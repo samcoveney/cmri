@@ -1,0 +1,246 @@
+#!python
+"""Script for fitting tensors."""
+
+import argparse
+import numpy as np
+import numbers
+import time
+
+import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib import cm
+
+import cmri.utils as utils
+import cmri.roi as roi
+
+from dipy.io.image import load_nifti, save_nifti
+from dipy.io import read_bvals_bvecs
+from dipy.core.gradients import gradient_table
+from dipy.viz import regtools
+from dipy.viz import window, actor, fury
+from dipy.data import get_sphere
+import dipy.reconst.dti as dti
+from dipy.reconst.dti import fractional_anisotropy, mean_diffusivity, color_fa
+
+
+def main(args):
+
+    # set filename
+    flnm = utils.Filename(args.filename, args.bfile, args.ext)
+
+    # fit tensors
+    if args.tensors:
+
+        # load data (could load with sitk and convert to NumPy)
+        data, affine, img = load_nifti(flnm.filename, return_img = True)
+        data = data.astype(np.float64)
+
+        # load bdata
+        bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
+        gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
+
+        # rotate bvecs (such that image cosines can be treated as np.eye(3))
+        if True:
+            rot = affine[0:3, 0:3].copy()
+            for idx in range(3):
+                rot[:,idx] = rot[:,idx] / np.linalg.norm(rot[:,idx])
+            bvecs = (rot[0:3, 0:3].T.dot(bvecs.T)).T
+            gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
+
+        # fit tensor model
+        tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
+        tenfit = tenmodel.fit(data) 
+
+        # squeeze out the extra dimension out the front
+        evecs, evals, S0 = tenfit.evecs, tenfit.evals, tenfit.S0_hat
+        save_nifti(flnm.new('tensor_evecs'), evecs, affine)
+        save_nifti(flnm.new('tensor_evals'), evals, affine)
+        save_nifti(flnm.new('tensor_s0'), S0, affine)
+
+        # several tensor metrics
+        # NOTE: could calculate these only when asked
+        FA = fractional_anisotropy(evals)
+        MD = mean_diffusivity(evals)
+        save_nifti(flnm.new('tensor_fa'), FA, affine)
+        save_nifti(flnm.new('tensor_md'), MD, affine)
+
+
+    # select LV center
+    if args.lvcent:
+
+        val, _ = load_nifti(flnm.new('tensor_md'))
+        selector = roi.select_point(val, 0.0, 2.5e-3)
+        x, y = selector.run()
+        np.savetxt(flnm.new('LVcenter', "txt"), np.array([x, y]))
+
+
+    # calculate tensor angles
+    if args.angles:
+        
+        evecs, affine = load_nifti(flnm.new('tensor_evecs'))
+
+        # load LVcenter
+        LVcent = np.loadtxt(flnm.new('LVcenter', "txt"))
+
+        [Y, X] = np.meshgrid(range(evecs.shape[1]), range(evecs.shape[0]))
+
+        # radial direction
+        rad = np.zeros([evecs.shape[0], evecs.shape[1], 3])
+        rad[:, :, 0] = X - LVcent[0]
+        rad[:, :, 1] = Y - LVcent[1]
+        rad[:, :, 2] = 0.0
+        rad = rad / np.linalg.norm(rad, axis=-1)[..., None]
+
+        # longitudinal direction
+        lon = np.zeros_like(rad)
+        lon[:, :, 2] = +1.0 
+
+        # circular direction - should be clockwise looking from base to apex
+        cir = np.cross(rad, lon)
+        cir = cir / np.linalg.norm(cir, axis=-1)[..., None]
+        
+        # double check that coordinates are okay
+        if False:
+            # NOTE: long-axis is into screen in this view, arrows will appear to have opposite sense
+            s0, _ = load_nifti(flnm.new('tensor_s0'))
+            fig, ax = plt.subplots(1,2)
+            ax[0].imshow(s0.T)
+            ax[1].imshow(s0.T)
+            ax[0].quiver(X[:, :], Y[:, :], rad[:, :, 0], rad[:, :, 1], color = "red", angles = 'xy', scale = s0.shape[0])
+            ax[1].quiver(X[:, :], Y[:, :], cir[:, :, 0], cir[:, :, 1], color = "red", angles = 'xy', scale = s0.shape[0])
+            plt.show()
+
+        # non-projection method for calculating HA
+        # ----------------------------------------
+        tmp = np.abs(np.einsum('ijk,ijk->ij', evecs[:, :, :, 0], lon))  # used abs()
+        HA = np.degrees(np.arcsin(tmp))
+        ls = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 0])
+        cs = np.einsum('ijk,ijk->ij', cir, evecs[:, :, :, 0])
+        HA[(ls > 0) & (cs < 0)] = -HA[(ls > 0) & (cs < 0)]  # quadrant 2
+        HA[(ls < 0) & (cs > 0)] = -HA[(ls < 0) & (cs > 0)]  # quadrant 4
+        #HA[(ls > 0) & (cs > 0)] = -HA[(ls > 0) & (cs > 0)]  # quadrant 1
+        #HA[(ls < 0) & (cs < 0)] = -HA[(ls < 0) & (cs < 0)]  # quadrant 3
+
+        save_nifti(flnm.new('tensor_ha'), HA, affine)
+
+        # non-projection method for e2a
+        # ----------------------------- 
+        # TODO!
+
+
+    # simple gridplot of a few key values
+    if args.gridplot:
+
+        fig, ax = plt.subplots(2, 2)
+        for idx, i in enumerate(["md", "fa", "s0", "ha"]):
+            val, _ = load_nifti(flnm.new('tensor_' + i))
+            val = val.squeeze()
+
+            if i == "md": ii, jj, vmin, vmax = 0, 0, 0.0, 2.5e-3
+            if i == "fa": ii, jj, vmin, vmax = 0, 1, 0.0, 1.0
+            if i == "s0": ii, jj, vmin, vmax = 1, 0, 0.0, 100
+            if i == "ha": ii, jj, vmin, vmax = 1, 1, -90.0, +90.0
+
+            im = ax[ii, jj].imshow(val.T, cmap='turbo', vmin=vmin, vmax=vmax)
+            divider = make_axes_locatable(ax[ii, jj])
+            cax = divider.append_axes('right', size='5%', pad=0.05)
+            fig.colorbar(im, cax=cax, orientation='vertical')
+
+            ax[ii,jj].set_title(i)
+
+        plt.show()
+
+        
+    # plot tensors
+    if args.plot:
+
+        # NOTES:
+        # * chooose which color
+        # * ensure tenfit exists (attempt load if not?)
+
+        # load tensor results
+        evecs, affine = load_nifti(flnm.new('tensor_evecs'))
+        evals, _ = load_nifti(flnm.new('tensor_evals'))
+        evals = np.expand_dims(evals, axis=2)
+        evecs = np.expand_dims(evecs, axis=2)
+
+        # load scalar
+        val, _ = load_nifti(flnm.new('tensor_' + args.plot))
+        val = np.expand_dims(val, axis=2)
+        val[np.isnan(val)] = 0.0
+
+        # setup colors 
+        turbo = cm.get_cmap('turbo', 256)
+        if args.plot == 'fa':
+            RGB = color_fa(val, evecs)
+        if args.plot == 'md':
+            RGB = turbo( np.clip(val / 2.5e-3, 0, 1) )[..., 0:3]
+        if args.plot == 'ha':
+            RGB = turbo( ( val - (-90) ) / 180)[..., 0:3]
+
+        # plot with Fury
+        scene = window.Scene()
+        sphere = get_sphere('repulsion724')
+        tensor_actor = actor.tensor_slicer(evals, evecs,
+                                           sphere=sphere,
+                                           scalar_colors=RGB,
+                                           scale=1.0, norm=True)
+
+        # rotate slice so origin is effectively in upper left
+        fury.ui.containers.rotate(tensor_actor, rotation=(180, 1, 0, 0))
+        scene.add(tensor_actor)
+
+        # colormap_lookup_table
+        #tmp = fury.colormap.colormap_lookup_table((0.0, 2.5e-3))  # but this has no links to RGB !actor
+        #scene.add(actor.scalar_bar(tmp, title=args.plot))  # this does not do what I want
+        #scene.add(actor.scalar_bar(title=args.plot))  # this does not do what I want
+
+        # NOTE: these plots need turning over to match the standard viewing orientation, I think, since origin appears to be bottom left
+
+        window.show(scene)
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description = "Fit tensors and calculate various quantities.") 
+
+    parser.add_argument("-f", "--filename", type = str, required = True,
+                        help = "Name of NIFTI file")
+
+    parser.add_argument("--ext", type = str, required = False, default = "nii",
+                        choices = ["nii", "nii.gz"], help = "Extension for saved files")
+
+    parser.add_argument("-b", "--bfile", type = str, required = True,
+                        help = "Name of bval/bvec file, without extension")
+
+    parser.add_argument("-t", "--tensors", required = False, default = False,
+                        action = "store_true", help = "Fit tensors and calculate tensor metrics")
+
+    parser.add_argument("-l", "--lvcent", required = False, default = False,
+                        action = "store_true", help = "Select LV center")
+
+    parser.add_argument("-a", "--angles", required = False, default = False,
+                        action = "store_true", help = "Calculate tensor angles")
+
+    parser.add_argument("-g", "--gridplot", required = False, default = False,
+                        action = "store_true", help = "Simple plot of a few key quantities")
+
+    parser.add_argument("-p", "--plot", required = False, default = False,
+                        choices = ['fa', 'md', 's0', 'ha', 'e2a'], help = "Plot some figures")
+
+    parser.add_argument("-v", "--verbose", required = False, default = False,
+                        action = "store_true", help = "Verbose optimization")
+
+    args = parser.parse_args()
+
+    main(args)
+
+
+#        # NOTE: perhaps we should, instead, use affine to determine the image orientation
+#        if False:  # rotate the bvecs using the affine matrix
+#            rot = affine[0:3, 0:3].copy()
+#            for idx in range(3):
+#                rot[:,idx] = rot[:,idx] / np.linalg.norm(rot[:,idx])
+#            bvecs = (rot[0:3, 0:3].T.dot(bvecs.T)).T
+#            gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
+

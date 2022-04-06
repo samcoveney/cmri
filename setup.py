@@ -9,6 +9,6 @@ setup(name = 'cmri',
       license = 'GPL-3.0+',
       packages = ['cmri'],
       package_dir = {'cmri': 'cmri'},
-      scripts=['scripts/cmri_reg_series'],
+      scripts=['scripts/cmri_reg_series', 'scripts/cmri_fit_tensors'],
      )
 
