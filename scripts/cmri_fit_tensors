@@ -58,7 +58,6 @@ def main(args):
         save_nifti(flnm.new('tensor_s0'), S0, affine)
 
         # several tensor metrics
-        # NOTE: could calculate these only when asked
         FA = fractional_anisotropy(evals)
         MD = mean_diffusivity(evals)
         save_nifti(flnm.new('tensor_fa'), FA, affine)
@@ -110,38 +109,54 @@ def main(args):
             ax[1].quiver(X[:, :], Y[:, :], cir[:, :, 0], cir[:, :, 1], color = "red", angles = 'xy', scale = s0.shape[0])
             plt.show()
 
-        # non-projection method for calculating HA
-        # ----------------------------------------
-        tmp = np.abs(np.einsum('ijk,ijk->ij', evecs[:, :, :, 0], lon))  # used abs()
-        HA = np.degrees(np.arcsin(tmp))
-        ls = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 0])
-        cs = np.einsum('ijk,ijk->ij', cir, evecs[:, :, :, 0])
-        HA[(ls > 0) & (cs < 0)] = -HA[(ls > 0) & (cs < 0)]  # quadrant 2
-        HA[(ls < 0) & (cs > 0)] = -HA[(ls < 0) & (cs > 0)]  # quadrant 4
-        #HA[(ls > 0) & (cs > 0)] = -HA[(ls > 0) & (cs > 0)]  # quadrant 1
-        #HA[(ls < 0) & (cs < 0)] = -HA[(ls < 0) & (cs < 0)]  # quadrant 3
+        # determining directions of evecs wrt to LV coordinates
+        # -----------------------------------------------------
+        ls1 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 0])
+        cs1 = np.einsum('ijk,ijk->ij', cir, evecs[:, :, :, 0])
+        rs1 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, :, 0])
+        ls3 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 2])
+        rs3 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, :, 2])
 
+        # non-projection method for calculating helix angle HA
+        # ----------------------------------------------------
+        HA = np.degrees(np.arcsin(np.abs(ls1)))
+        HA[(ls1 > 0) & (cs1 < 0)] = -HA[(ls1 > 0) & (cs1 < 0)]
+        HA[(ls1 < 0) & (cs1 > 0)] = -HA[(ls1 < 0) & (cs1 > 0)]
         save_nifti(flnm.new('tensor_ha'), HA, affine)
 
-        # non-projection method for e2a
-        # ----------------------------- 
-        # TODO!
+        # non-projection method for calculating intrusion angle IA
+        # --------------------------------------------------------
+        IA = np.degrees(np.arcsin(np.abs(rs1)))
+        IA[(ls1 > 0) & (rs1 < 0)] = -IA[(ls1 > 0) & (rs1 < 0)]
+        IA[(ls1 < 0) & (rs1 > 0)] = -IA[(ls1 < 0) & (rs1 > 0)]
+        save_nifti(flnm.new('tensor_ia'), IA, affine)
+
+        # non-projection method for calculating aggregate angle AA
+        # --------------------------------------------------------
+        AA = np.degrees(np.arcsin(np.abs(rs3)))
+        AA[(ls3 > 0) & (rs3 < 0)] = -AA[(ls3 > 0) & (rs3 < 0)]
+        AA[(ls3 < 0) & (rs3 > 0)] = -AA[(ls3 < 0) & (rs3 > 0)]
+        save_nifti(flnm.new('tensor_aa'), AA, affine)
 
 
     # simple gridplot of a few key values
     if args.gridplot:
 
         fig, ax = plt.subplots(2, 2)
-        for idx, i in enumerate(["md", "fa", "s0", "ha"]):
+        for idx, i in enumerate(["md", "fa", "ha", "ia"]):
             val, _ = load_nifti(flnm.new('tensor_' + i))
             val = val.squeeze()
 
-            if i == "md": ii, jj, vmin, vmax = 0, 0, 0.0, 2.5e-3
-            if i == "fa": ii, jj, vmin, vmax = 0, 1, 0.0, 1.0
-            if i == "s0": ii, jj, vmin, vmax = 1, 0, 0.0, 100
-            if i == "ha": ii, jj, vmin, vmax = 1, 1, -90.0, +90.0
+            if i == "md":
+                ii, jj, cmap, vmin, vmax = 0, 0, "turbo", 0.0, 2.5e-3
+            if i == "fa":
+                ii, jj, cmap, vmin, vmax = 0, 1, "turbo", 0.0, 1.0
+            if i == "ha":
+                ii, jj, cmap, vmin, vmax = 1, 0, utils.cyclic_turbo(deg=70), -90.0, +90.0
+            if i == "ia":
+                ii, jj, cmap, vmin, vmax = 1, 1, "bwr", -30.0, +30.0
 
-            im = ax[ii, jj].imshow(val.T, cmap='turbo', vmin=vmin, vmax=vmax)
+            im = ax[ii, jj].imshow(val.T, cmap=cmap, vmin=vmin, vmax=vmax)
             divider = make_axes_locatable(ax[ii, jj])
             cax = divider.append_axes('right', size='5%', pad=0.05)
             fig.colorbar(im, cax=cax, orientation='vertical')
@@ -154,10 +169,6 @@ def main(args):
     # plot tensors
     if args.plot:
 
-        # NOTES:
-        # * chooose which color
-        # * ensure tenfit exists (attempt load if not?)
-
         # load tensor results
         evecs, affine = load_nifti(flnm.new('tensor_evecs'))
         evals, _ = load_nifti(flnm.new('tensor_evals'))
@@ -169,14 +180,20 @@ def main(args):
         val = np.expand_dims(val, axis=2)
         val[np.isnan(val)] = 0.0
 
-        # setup colors 
+        # set colors
         turbo = cm.get_cmap('turbo', 256)
+        cturbo = utils.cyclic_turbo(deg=70)
+        redblue = cm.get_cmap('bwr', 256)
         if args.plot == 'fa':
             RGB = color_fa(val, evecs)
         if args.plot == 'md':
             RGB = turbo( np.clip(val / 2.5e-3, 0, 1) )[..., 0:3]
         if args.plot == 'ha':
-            RGB = turbo( ( val - (-90) ) / 180)[..., 0:3]
+            RGB = cturbo( ( val - (-90) ) / 180)[..., 0:3]
+        if args.plot == 'ia':
+            RGB = redblue( ( val - (-30) ) / 60)[..., 0:3]
+        if args.plot == 'aa':
+            RGB = redblue( ( val - (-60) ) / 120)[..., 0:3]
 
         # plot with Fury
         scene = window.Scene()
@@ -194,8 +211,6 @@ def main(args):
         #tmp = fury.colormap.colormap_lookup_table((0.0, 2.5e-3))  # but this has no links to RGB !actor
         #scene.add(actor.scalar_bar(tmp, title=args.plot))  # this does not do what I want
         #scene.add(actor.scalar_bar(title=args.plot))  # this does not do what I want
-
-        # NOTE: these plots need turning over to match the standard viewing orientation, I think, since origin appears to be bottom left
 
         window.show(scene)
 
@@ -226,7 +241,7 @@ if __name__ == "__main__":
                         action = "store_true", help = "Simple plot of a few key quantities")
 
     parser.add_argument("-p", "--plot", required = False, default = False,
-                        choices = ['fa', 'md', 's0', 'ha', 'e2a'], help = "Plot some figures")
+                        choices = ['fa', 'md', 's0', 'ha', 'ia', 'aa'], help = "Plot some figures")
 
     parser.add_argument("-v", "--verbose", required = False, default = False,
                         action = "store_true", help = "Verbose optimization")
@@ -235,12 +250,4 @@ if __name__ == "__main__":
 
     main(args)
 
-
-#        # NOTE: perhaps we should, instead, use affine to determine the image orientation
-#        if False:  # rotate the bvecs using the affine matrix
-#            rot = affine[0:3, 0:3].copy()
-#            for idx in range(3):
-#                rot[:,idx] = rot[:,idx] / np.linalg.norm(rot[:,idx])
-#            bvecs = (rot[0:3, 0:3].T.dot(bvecs.T)).T
-#            gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
 
