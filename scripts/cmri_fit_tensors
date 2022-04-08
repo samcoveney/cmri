@@ -114,6 +114,8 @@ def main(args):
         ls1 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 0])
         cs1 = np.einsum('ijk,ijk->ij', cir, evecs[:, :, :, 0])
         rs1 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, :, 0])
+        cs2 = np.einsum('ijk,ijk->ij', cir, evecs[:, :, :, 1])
+        rs2 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, :, 1])
         ls3 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 2])
         rs3 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, :, 2])
 
@@ -131,19 +133,64 @@ def main(args):
         IA[(ls1 < 0) & (rs1 > 0)] = -IA[(ls1 < 0) & (rs1 > 0)]
         save_nifti(flnm.new('tensor_ia'), IA, affine)
 
-        # non-projection method for calculating aggregate angle AA
-        # --------------------------------------------------------
+        # non-projection method for calculating intrusion angle E2A 
+        # ---------------------------------------------------------
+        E2A = np.degrees(np.arcsin(np.abs(rs2)))
+        E2A[(rs2 > 0) & (cs2 > 0)] = -E2A[(rs2 > 0) & (cs2 > 0)]
+        E2A[(rs2 < 0) & (cs2 < 0)] = -E2A[(rs2 < 0) & (cs2 < 0)]
+        save_nifti(flnm.new('tensor_e2a'), E2A, affine)
+
+        # non-projection method for calculating aggregate angle AA (E3A)
+        # --------------------------------------------------------------
         AA = np.degrees(np.arcsin(np.abs(rs3)))
+        # original, designed to set the sign
         AA[(ls3 > 0) & (rs3 < 0)] = -AA[(ls3 > 0) & (rs3 < 0)]
         AA[(ls3 < 0) & (rs3 > 0)] = -AA[(ls3 < 0) & (rs3 > 0)]
         save_nifti(flnm.new('tensor_aa'), AA, affine)
+
+        # projection method for calculating helix angle HA
+        # ------------------------------------------------
+        # 1. project e1 into long-circ (tangential) plane
+        e1_lc = evecs[..., 0] - rs1[..., None]*rad
+        e1_lc = e1_lc / np.linalg.norm(e1_lc, axis=-1)[..., None]
+        # 2. angle with circ
+        tmp = np.abs(np.einsum('ijk,ijk->ij', e1_lc, cir))
+        HA_proj = np.degrees(np.arccos(tmp))
+        HA_proj *= np.sign(HA)
+        save_nifti(flnm.new('tensor_hap'), HA_proj, affine)
+
+        # projection method for calculating transverse angle TA
+        # -----------------------------------------------------
+        # 1. project e1 into circ-rad (horizontal) plane
+        e1_cr = evecs[..., 0] - ls1[..., None]*lon
+        e1_cr = e1_cr / np.linalg.norm(e1_cr, axis=-1)[..., None]
+        # 2. angle with circ 
+        tmp = np.abs(np.einsum('ijk,ijk->ij', e1_cr, cir))
+        TA = np.degrees(np.arccos(tmp))
+        TA *= np.sign(IA)
+        save_nifti(flnm.new('tensor_ta'), TA, affine)
+
+        # projection method for calculating E2A
+        # -------------------------------------
+        # 1. project e2 into crossmyo-rad plane (normal to e1_lc)
+        e2_mr = np.einsum('ijk,ijk->ij', e1_lc, evecs[:, :, :, 1])
+        e2_mr = evecs[..., 1] - e2_mr[..., None]*e1_lc
+        e2_mr = e2_mr / np.linalg.norm(e2_mr, axis=-1)[..., None]
+        # 2. angle with long-circ plane
+        tmp = np.einsum('ijk,ijk->ij', rad, e2_mr)
+        E2A_proj = np.degrees(np.arcsin(np.abs(tmp)))
+        # 3. rad and circ poing have opposite signs, make positive, else negative
+        E2A_proj[(rs2 > 0) & (cs2 > 0)] = -E2A_proj[(rs2 > 0) & (cs2 > 0)]
+        E2A_proj[(rs2 < 0) & (cs2 < 0)] = -E2A_proj[(rs2 < 0) & (cs2 < 0)]
+        save_nifti(flnm.new('tensor_e2ap'), E2A_proj, affine)
 
 
     # simple gridplot of a few key values
     if args.gridplot:
 
+        # a few useful plots
         fig, ax = plt.subplots(2, 2)
-        for idx, i in enumerate(["md", "fa", "ha", "ia"]):
+        for idx, i in enumerate(["md", "fa", "ha", "hap"]):
             val, _ = load_nifti(flnm.new('tensor_' + i))
             val = val.squeeze()
 
@@ -153,8 +200,10 @@ def main(args):
                 ii, jj, cmap, vmin, vmax = 0, 1, "turbo", 0.0, 1.0
             if i == "ha":
                 ii, jj, cmap, vmin, vmax = 1, 0, utils.cyclic_turbo(deg=70), -90.0, +90.0
-            if i == "ia":
-                ii, jj, cmap, vmin, vmax = 1, 1, "bwr", -30.0, +30.0
+            if i == "hap":
+                ii, jj, cmap, vmin, vmax = 1, 1, utils.cyclic_turbo(deg=70), -90.0, +90.0
+            #if i == "ia":
+            #    ii, jj, cmap, vmin, vmax = 1, 1, "bwr", -30.0, +30.0
 
             im = ax[ii, jj].imshow(val.T, cmap=cmap, vmin=vmin, vmax=vmax)
             divider = make_axes_locatable(ax[ii, jj])
@@ -165,7 +214,52 @@ def main(args):
 
         plt.show()
 
+
+        # compare projected and non-projected 
+        turbo = cm.get_cmap('turbo', 256)
+        cturbo = utils.cyclic_turbo(deg=70)
+        redblue = cm.get_cmap('bwr', 256)
+        twilight = cm.get_cmap('twilight', 256)
+
+        fig, ax = plt.subplots(3, 2)
+        for idx, i in enumerate(["ha", "hap", "ia", "ta", "e2a", "e2ap"]):
+            val, _ = load_nifti(flnm.new('tensor_' + i))
+            val = val.squeeze()
+
+            if i in ["ha", "hap"]:
+                cmap, vmin, vmax = cturbo, -90.0, +90.0
+                [ii, jj] = [0, 0] if i == "ha" else [0, 1]
+            if i in ["ia", "ta"]:
+                cmap, vmin, vmax = redblue, -60.0, +60.0
+                [ii, jj] = [1, 0] if i == "ia" else [1, 1]
+            if i in ["e2a", "e2ap"]:
+                cmap, vmin, vmax = redblue, -90.0, +90.0
+                [ii, jj] = [2, 0] if i == "e2a" else [2, 1]
+
+            im = ax[ii, jj].imshow(val.T, cmap=cmap, vmin=vmin, vmax=vmax)
+            ax[ii, jj].set_title(i)
+            divider = make_axes_locatable(ax[ii, jj])
+            cax = divider.append_axes('right', size='5%', pad=0.05)
+            fig.colorbar(im, cax=cax, orientation='vertical')
+        plt.show()
         
+        # aggregate angle plots - testing colormaps
+        fig, ax = plt.subplots(1, 2)
+        val, _ = load_nifti(flnm.new('tensor_aa'))
+        for idx in range(2):
+            if idx == 0:
+                ii, cmap = 0, redblue 
+            if idx == 1:
+                ii, cmap = 1, utils.cyclic_bwr() 
+
+            im = ax[ii].imshow(val.T, cmap=cmap, vmin=-90, vmax=+90)
+            ax[ii].set_title("aa")
+            divider = make_axes_locatable(ax[ii])
+            cax = divider.append_axes('right', size='5%', pad=0.05)
+            fig.colorbar(im, cax=cax, orientation='vertical')
+        plt.show()
+
+
     # plot tensors
     if args.plot:
 
@@ -188,9 +282,9 @@ def main(args):
             RGB = color_fa(val, evecs)
         if args.plot == 'md':
             RGB = turbo( np.clip(val / 2.5e-3, 0, 1) )[..., 0:3]
-        if args.plot == 'ha':
+        if args.plot in ['ha', 'hap']:
             RGB = cturbo( ( val - (-90) ) / 180)[..., 0:3]
-        if args.plot == 'ia':
+        if args.plot in ['ia', 'ta', 'e2a']:
             RGB = redblue( ( val - (-30) ) / 60)[..., 0:3]
         if args.plot == 'aa':
             RGB = redblue( ( val - (-60) ) / 120)[..., 0:3]
@@ -241,7 +335,7 @@ if __name__ == "__main__":
                         action = "store_true", help = "Simple plot of a few key quantities")
 
     parser.add_argument("-p", "--plot", required = False, default = False,
-                        choices = ['fa', 'md', 's0', 'ha', 'ia', 'aa'], help = "Plot some figures")
+                        choices = ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a'], help = "Plot some figures")
 
     parser.add_argument("-v", "--verbose", required = False, default = False,
                         action = "store_true", help = "Verbose optimization")

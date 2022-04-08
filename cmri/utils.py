@@ -51,8 +51,10 @@ def cyclic_turbo(deg=70):
     turbo = cm.get_cmap('turbo', 256)
 
     newcolors = turbo(np.linspace(0, 1, 256))
-    violet = np.array([148/256, 0/256, 211/256, 1]);
     num = np.ceil(((90-deg)/90)*256).astype(int)  # begin change around +/-deg
+
+    violet = np.array([148/256, 0/256, 211/256, 1])
+    #violet = (newcolors[num] + newcolors[-num-1]) / 2.0
 
     for idx in range(0, num):
         newcolors[idx] = newcolors[num, :]*(idx/num) + violet*(1.0 - idx/num)
@@ -64,3 +66,35 @@ def cyclic_turbo(deg=70):
     
     return cturbo
 
+
+def cyclic_bwr():
+    """Create a cyclic turbo colormap with violet on ends.
+       Violet begins appearing after +/-deg for range -90 to 90 degrees."""
+
+    # setup colors 
+    bwr = cm.get_cmap('bwr', 256)
+    bwr = bwr(np.linspace(0, 1, 256))
+    blue, red, white = bwr[63], bwr[-64], bwr[127]
+    violet = (blue + red) / 2.0
+
+    newcolors = np.zeros((256, 4))
+    newcolors[..., -1] = 1
+    num = 64
+
+    for idx in range(1, 65):
+        newcolors[idx - 1] = blue*(idx/num) + white*(1.0 - idx/num)
+
+    for idx in range(1, 65):
+        newcolors[64 + idx - 1] = violet*(idx/num) + blue*(1.0 - idx/num)
+
+    for idx in range(1, 65):
+        newcolors[128 + idx - 1] = red*(idx/num) + violet*(1.0 - idx/num)
+
+    for idx in range(1, 65):
+        newcolors[192 + idx - 1] = white*(idx/num) + red*(1.0 - idx/num)
+
+    print(newcolors)
+    new = ListedColormap(newcolors)
+    print(new)
+    
+    return new
