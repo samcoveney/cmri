@@ -34,10 +34,25 @@ def main(args):
         # load data (could load with sitk and convert to NumPy)
         data, affine, img = load_nifti(flnm.filename, return_img = True)
         data = data.astype(np.float64)
+        print(data.shape)
+        input("waiting")
 
         # load bdata
         bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
         gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
+
+        # NOTE: this works, but might be preferable to define a square ROI based on the mask, and take subset of data
+        if args.maskfile is not None:
+            mask, _ = load_nifti(args.maskfile)
+        else:
+            mask = np.ones_like(data[..., 0])
+
+        if args.outliers is not None:
+            good_img, _ = load_nifti(args.outliers)
+            good_img = np.squeeze(np.argwhere(good_img))
+            data = data[:, :, good_img]
+            bvals = bvals[good_img]
+            bvecs = bvecs[good_img]
 
         # rotate bvecs (such that image cosines can be treated as np.eye(3))
         if True:
@@ -49,7 +64,7 @@ def main(args):
 
         # fit tensor model
         tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
-        tenfit = tenmodel.fit(data) 
+        tenfit = tenmodel.fit(data, mask) 
 
         # squeeze out the extra dimension out the front
         evecs, evals, S0 = tenfit.evecs, tenfit.evals, tenfit.S0_hat
@@ -324,6 +339,12 @@ if __name__ == "__main__":
 
     parser.add_argument("-t", "--tensors", required = False, default = False,
                         action = "store_true", help = "Fit tensors and calculate tensor metrics")
+
+    parser.add_argument("-o", "--outliers", type = str, required = False,
+                        default = None, help = "Specify file that indicates good images for fitting.")
+
+    parser.add_argument("-m", "--maskfile", type = str, required = False,
+                        default = None, help = "Use a mask when identifying outliers")
 
     parser.add_argument("-l", "--lvcent", required = False, default = False,
                         action = "store_true", help = "Select LV center")

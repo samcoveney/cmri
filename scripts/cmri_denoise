@@ -1,0 +1,158 @@
+#!python
+"""Script for denoising an image series and identifying outliers."""
+
+import argparse
+import numpy as np
+import numbers
+import time
+import matplotlib.pyplot as plt
+
+import cmri.utils as utils
+import cmri.roi as roi
+
+import SimpleITK as sitk
+
+from dipy.io.image import load_nifti, save_nifti
+from dipy.io import read_bvals_bvecs
+from dipy.core.gradients import gradient_table
+
+from dipy.denoise.localpca import localpca
+from dipy.denoise.pca_noise_estimate import pca_noise_estimate
+
+import dipy.reconst.dti as dti
+
+def main(args):
+
+    # set filename
+    flnm = utils.Filename(args.filename, args.bfile, args.ext)
+
+    # load data (could load with sitk and convert to NumPy)
+    data, affine, img = load_nifti(flnm.filename, return_img = True)
+    data = data.astype(np.float64)
+
+    # load bdata
+    bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
+    gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
+
+    # denoise with PCA
+    if args.denoise:
+        
+        # default patch size
+        if args.radius is None:
+            root = np.ceil(data.shape[-1] ** (1./2))  # 2D
+            root = root + 1 if (root % 2) == 0 else root  # make odd
+            patch_radius = int((root - 1) / 2)  # suggested patch_radius
+            print("Setting patch_radius to", patch_radius)
+        else:
+            patch_radius = args.radius
+
+        # use 3D data, but slice dimension has size 1
+        tmp = np.expand_dims(data, 2)
+
+        # estimate noise
+        sigma = pca_noise_estimate(tmp, gtab, patch_radius=patch_radius,
+                                     correct_bias=True, smooth=3)
+        save_nifti(flnm.new("sigma_pr_" + str(patch_radius)),
+                   sigma, affine)
+
+        # denoise array
+        data_denoised = localpca(tmp, sigma, tau_factor=2.3,
+                                  patch_radius=patch_radius)
+        data_denoised = np.squeeze(data_denoised)
+        save_nifti(flnm.new("denoised_pr_" + str(patch_radius)),
+                   data_denoised, affine)
+    
+    # outlier detection
+    if args.outliers:
+
+        # fit tensor model
+        tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
+        tenfit = tenmodel.fit(data)
+        dti_params = np.dstack([tenfit.evals, tenfit.evecs.reshape(tenfit.shape[0:2] + (-1,))])  # NOTE: (given the reshaping in dti.tensor_prediction, this seems right)
+        data_f = dti.tensor_prediction(dti_params, gtab, tenfit.S0_hat)
+
+        # load mask
+        if args.maskfile is not None:
+            mask, _ = load_nifti(args.maskfile)
+        else:
+            mask = np.ones_like(data[..., 0])
+        static_mask = sitk.GetImageFromArray(mask)
+        static_mask = sitk.Cast(static_mask, sitk.sitkUInt8)
+
+        # calculate MI between data and data_f
+        MI = np.zeros(data.shape[-1]) 
+        for idx in range(data.shape[-1]):
+            y = sitk.GetImageFromArray(data[..., idx])
+            f = sitk.GetImageFromArray(data_f[..., idx])
+
+            reg_meth = sitk.ImageRegistrationMethod()
+
+            # NOTE: I need to communicate a 2D transform, without doing any transforming
+            initial_transform = sitk.CenteredTransformInitializer(
+                y, f, sitk.Euler2DTransform(),
+                sitk.CenteredTransformInitializerFilter.GEOMETRY
+            )
+            reg_meth.SetInitialTransform(initial_transform) 
+
+            # NOTE: I should only need one mask in theory
+            reg_meth.SetMetricFixedMask(static_mask)
+            reg_meth.SetMetricMovingMask(static_mask)
+
+            reg_meth.SetMetricAsMattesMutualInformation()
+            reg_meth.SetMetricSamplingStrategy(reg_meth.NONE)
+            reg_meth.SetMetricSamplingPercentage(1.0)
+            res = reg_meth.MetricEvaluate(y, f)
+
+            MI[idx] = res
+
+        # GUI to select threshold
+        good_img = roi.select_outliers(data, MI)
+        save_nifti(flnm.new("outliers"), good_img, affine)
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description = "Denoise a 2D DWI series and identify outliers.") 
+
+    parser.add_argument("-f", "--filename", type = str, required = True,
+                        help = "Name of NIFTI file")
+
+    parser.add_argument("--ext", type = str, required = False, default = "nii",
+                        choices = ["nii", "nii.gz"], help = "Extension for saved files")
+
+    parser.add_argument("-b", "--bfile", type = str, required = True,
+                        help = "Name of bval/bvec file, without extension")
+
+    parser.add_argument("-d", "--denoise", required = False, default = False,
+                        action = "store_true", help = "Denoise with PCA")
+
+    parser.add_argument("-r", "--radius", type = int, required = False,
+                        default = None, help = "Patch radius for PCA denoising")
+
+    parser.add_argument("-o", "--outliers", required = False, default = False,
+                        action = "store_true", help = "Detect outliers")
+
+    parser.add_argument("-m", "--maskfile", type = str, required = False,
+                        default = None, help = "Use a mask when identifying outliers")
+
+    parser.add_argument("-v", "--verbose", required = False, default = False,
+                        action = "store_true", help = "Verbose optimization")
+
+    args = parser.parse_args()
+
+    main(args)
+
+
+#    if False:
+#        print(f)
+#        print(y)
+#
+#        elastixImageFilter = sitk.ElastixImageFilter()
+#        elastixImageFilter.SetFixedImage(y)
+#        elastixImageFilter.SetMovingImage(f)
+#
+#        elastixImageFilter.SetParameter('NumberOfResolutions', '1')
+#        elastixImageFilter.SetParameter('AutomaticTransformInitialization', 'false')
+#
+#        import IPython
+#        IPython.embed()

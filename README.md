@@ -30,11 +30,11 @@ Data is currently required to be in a NIfTI format (either .nii or .nii.gz). To 
 
 ```python
 
-    import dicom2nifti as dn
-    
-    # set names of directories dicom_dir and output_dir
-    
-    dn.convert_directory(dicom_dir, output_dir, compression=True, reorient=False)
+import dicom2nifti as dn
+
+# set names of directories dicom_dir and output_dir
+
+dn.convert_directory(dicom_dir, output_dir, compression=True, reorient=False)
 
 ```
 
