@@ -8,7 +8,8 @@ def affine_registration_sitkimage(moving, static,
                         pipeline=None,
                         moving_mask=None,
                         static_mask=None,
-                        verbose=False):
+                        verbose=False,
+                        iterations=None):
     """Register a moving image to a static image using SimpleElastix.
        All parameters must be SimpleITK images.
 
@@ -20,6 +21,7 @@ def affine_registration_sitkimage(moving, static,
     moving_mask : SimpleITK Image (sitkUInt8)
     static_mask : SimpleITK Image (sitkUInt8)
     verbose : bool, default False
+    iterations : int, default None
 
     Returns
     -------
@@ -58,7 +60,8 @@ def affine_registration_sitkimage(moving, static,
     elastixImageFilter.SetParameter('NumberOfResolutions', '3')
 
     # it always seems to reach this... so not converging
-    #elastixImageFilter.SetParameter('MaximumNumberOfIterations', '1000')
+    if iterations is not None:
+        elastixImageFilter.SetParameter('MaximumNumberOfIterations', str(int(iterations)))
 
     #import IPython
     #IPython.embed()
@@ -80,9 +83,9 @@ def affine_registration(moving, static,
                         pipeline=None,
                         moving_mask=None,
                         static_mask=None,
-                        verbose=False):
+                        verbose=False,
+                        iterations=None):
     """Register a moving image to a static image using SimpleElastix.
-       All parameters must be SimpleITK images.
 
     Parameters
     ----------
@@ -92,6 +95,7 @@ def affine_registration(moving, static,
     moving_mask : NumPy array (integer)
     static_mask : NumPy array (integer)
     verbose : bool, default False
+    iterations : int, default None
 
     Returns
     -------
@@ -115,7 +119,32 @@ def affine_registration(moving, static,
         pipeline=pipeline,
         moving_mask=moving_mask,
         static_mask=static_mask,
-        verbose=verbose)
+        verbose=verbose,
+        iterations=iterations)
+
+    transformed = sitk.GetArrayFromImage(transformed)
+
+    return transformed, params
+
+
+def affine_transform(image, params):
+    """Apply transform to image.
+
+    Parameters
+    ----------
+    image : NumPy array
+    params : SimpleITK parameter map
+
+    Returns
+    -------
+    transformed: the transformed image
+
+    """
+
+    image = sitk.GetImageFromArray(image)
+    transformed = sitk.Transformix(image, params)
+    transformed = sitk.GetArrayFromImage(transformed)
 
     return transformed
+
 
