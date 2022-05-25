@@ -1,0 +1,251 @@
+#!python
+"""For plotting results stored in NIfTI files."""
+
+import argparse
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import cm
+
+import cmri.utils as utils
+import cmri.roi as roi
+
+from dipy.io.image import load_nifti, save_nifti
+from dipy.io import read_bvals_bvecs
+from dipy.core.gradients import gradient_table
+from dipy.viz import window, actor, fury
+from dipy.data import get_sphere
+from dipy.reconst.dti import color_fa
+
+
+def main(args):
+
+    # load scalar data for coloring
+    scalars, affine = load_nifti(args.filename)
+    print("data shape:", scalars.shape)
+    print("affine matrix:", affine)
+
+    # set slice (possibly not used)
+    slice_index = args.slice
+    
+    if scalars.ndim > 2:
+        # in case the slices are stored in a different dimension
+        if args.dim == 0:
+            scalars = scalars[slice_index, :, :]
+        if args.dim == 1:
+            scalars = scalars[:, slice_index, :]
+        if args.dim == 2:
+            scalars = scalars[:, :, slice_index] 
+
+    # mask file
+    if args.maskfile is not None:
+        mask, _ = load_nifti(args.maskfile)
+        x1, x2, y1, y2 = roi.square_from_mask(mask, return_indices=True)
+        scalars = scalars[x1:x2, y1:y2]
+
+    # colors needed for plotting
+    color = args.color
+    turbo = cm.get_cmap('turbo', 256)
+    cturbo = utils.cyclic_turbo(deg=80)
+
+    # 2d plot
+    if args.plot2d:
+
+        cmap, vmin, vmax = utils.get_colors(color)
+
+        fig, ax = plt.subplots(1,1)
+        im = ax.imshow(scalars.T, cmap=cmap, vmin=vmin, vmax=vmax)
+        plt.title(color)
+        plt.colorbar(im)
+        plt.show()
+
+    # 3d plot
+    if args.plot3d or args.plot2dtensors:
+
+        print("Plotting tensors in 3D")
+
+        # load tensor results
+        evecs, _ = load_nifti(args.evecs)
+        evals, _ = load_nifti(args.evals)
+        evals = np.expand_dims(evals, axis=2)
+        evecs = np.expand_dims(evecs, axis=2)
+
+        # load scalar
+        if scalars.ndim == 2:
+            scalars = scalars[..., None]
+
+        # masks
+        if args.maskfile is not None:
+            evecs, evals = evecs[x1:x2, y1:y2], evals[x1:x2, y1:y2]
+
+        cmap, vmin, vmax = utils.get_colors(color)
+        if vmin == None: vmin = scalars.min()
+        if vmax == None: vmax = scalars.max()
+
+        # 2D tensor plot
+        if args.plot2dtensors:
+            roi.tensor_plot_2d(evecs, evals, scalars, args.color)
+
+        # 3d tensor plot
+        if args.plot3d:
+
+            RGB = cmap( (scalars - vmin) / (vmax - vmin) )[..., 0:3]
+
+            # plot with Fury
+            scene = window.Scene()
+
+            # create tensor actor
+            sphere = get_sphere('symmetric362')
+            tensor_actor = actor.tensor_slicer(evals, evecs,
+                                               sphere=sphere,
+                                               scalar_colors=RGB,
+                                               scale=0.5, norm=True)
+            scene.add(tensor_actor)
+
+            # add axes
+            axes = actor.axes(scale = (10, 10, 10))
+            scene.add(axes)
+
+            window.show(scene)
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description = "Plot contents of NIfTI files.") 
+
+    parser.add_argument("-f", "--filename", type = str, required = True,
+                        help = "Name of NIFTI file used for color")
+
+    #parser.add_argument("-b", "--bfile", type = str, required = True,
+    #                    help = "Name of bval/bvec file, without extension")
+
+    parser.add_argument("-d", "--dim", type = int, required = False, default = 2,
+                        help = "Dimension to extract slices from (index from 0)")
+
+    parser.add_argument("-s", "--slice", type = int, required = False, default = 0,
+                        help = "Slice index (index from 0)")
+
+    parser.add_argument("-c", "--color", required = True, default = False,
+                        choices = ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a', 'mask'], help = "Plot some figures")
+
+
+    # TODO: use single plot argument with allowable names
+    parser.add_argument("-p2", "--plot2d", required = False, default = False,
+                        action = "store_true", help = "Plot in 2d")
+    parser.add_argument("-pt", "--plot2dtensors", required = False, default = False,
+                        action = "store_true", help = "Plot tensors in 2d")
+    parser.add_argument("-p3", "--plot3d", required = False, default = False,
+                        action = "store_true", help = "Plot tensors in 3d")
+
+    parser.add_argument("--evecs", required = False, type = str,
+                        help = "Name of the evecs file")
+
+    parser.add_argument("--evals", required = False, type = str,
+                        help = "Name of the evals file")
+
+    parser.add_argument("-m", "--maskfile", type = str, required = False,
+                        default = None, help = "Use a mask when identifying outliers")
+
+    parser.add_argument("-g", "--gridplot", required = False, default = False,
+                        action = "store_true", help = "Simple plot of a few key quantities")
+
+    # NOTE: will put segementation into a different script later on
+    parser.add_argument("-seg", "--segment", required = False, default = False,
+                        action = "store_true", help = "Segmentation.")
+
+    args = parser.parse_args()
+
+    main(args)
+
+
+#    # simple gridplot of a few key values
+#    if args.gridplot:
+#
+#        # a few useful plots
+#        fig, ax = plt.subplots(2, 2)
+#        for idx, i in enumerate(["md", "fa", "ha", "hap"]):
+#            val, _ = load_nifti(flnm.new('tensor_' + i))
+#            val = val.squeeze()
+#
+#            if i == "md":
+#                ii, jj, cmap, vmin, vmax = 0, 0, "turbo", 0.0, 2.5e-3
+#            if i == "fa":
+#                ii, jj, cmap, vmin, vmax = 0, 1, "turbo", 0.0, 1.0
+#            if i == "ha":
+#                ii, jj, cmap, vmin, vmax = 1, 0, utils.cyclic_turbo(deg=70), -90.0, +90.0
+#            if i == "hap":
+#                ii, jj, cmap, vmin, vmax = 1, 1, utils.cyclic_turbo(deg=70), -90.0, +90.0
+#            #if i == "ia":
+#            #    ii, jj, cmap, vmin, vmax = 1, 1, "bwr", -30.0, +30.0
+#
+#            im = ax[ii, jj].imshow(val.T, cmap=cmap, vmin=vmin, vmax=vmax)
+#            divider = make_axes_locatable(ax[ii, jj])
+#            cax = divider.append_axes('right', size='5%', pad=0.05)
+#            fig.colorbar(im, cax=cax, orientation='vertical')
+#
+#            ax[ii,jj].set_title(i)
+#
+#        plt.show()
+#
+#
+#        # compare projected and non-projected 
+#        turbo = cm.get_cmap('turbo', 256)
+#        cturbo = utils.cyclic_turbo(deg=70)
+#        redblue = cm.get_cmap('bwr', 256)
+#        twilight = cm.get_cmap('twilight', 256)
+#
+#        fig, ax = plt.subplots(3, 2)
+#        for idx, i in enumerate(["ha", "hap", "ia", "ta", "e2a", "e2ap"]):
+#            val, _ = load_nifti(flnm.new('tensor_' + i))
+#            val = val.squeeze()
+#
+#            if i in ["ha", "hap"]:
+#                cmap, vmin, vmax = cturbo, -90.0, +90.0
+#                [ii, jj] = [0, 0] if i == "ha" else [0, 1]
+#            if i in ["ia", "ta"]:
+#                cmap, vmin, vmax = redblue, -60.0, +60.0
+#                [ii, jj] = [1, 0] if i == "ia" else [1, 1]
+#            if i in ["e2a", "e2ap"]:
+#                cmap, vmin, vmax = redblue, -90.0, +90.0
+#                [ii, jj] = [2, 0] if i == "e2a" else [2, 1]
+#
+#            im = ax[ii, jj].imshow(val.T, cmap=cmap, vmin=vmin, vmax=vmax)
+#            ax[ii, jj].set_title(i)
+#            divider = make_axes_locatable(ax[ii, jj])
+#            cax = divider.append_axes('right', size='5%', pad=0.05)
+#            fig.colorbar(im, cax=cax, orientation='vertical')
+#        plt.show()
+#        
+#        # aggregate angle plots - testing colormaps
+#        fig, ax = plt.subplots(1, 2)
+#        val, _ = load_nifti(flnm.new('tensor_aa'))
+#        for idx in range(2):
+#            if idx == 0:
+#                ii, cmap = 0, redblue 
+#            if idx == 1:
+#                ii, cmap = 1, utils.cyclic_bwr() 
+#
+#            im = ax[ii].imshow(val.T, cmap=cmap, vmin=-90, vmax=+90)
+#            ax[ii].set_title("aa")
+#            divider = make_axes_locatable(ax[ii])
+#            cax = divider.append_axes('right', size='5%', pad=0.05)
+#            fig.colorbar(im, cax=cax, orientation='vertical')
+#        plt.show()
+
+
+
+# for plotting arrows in 3d
+#
+#        if False: # FIXME: decide options
+#
+#            #directions_1 = evecs[:, :, :, :, 0].reshape(-1, 3)
+#            #directions_2 = evecs[:, :, :, :, 1].reshape(-1, 3)
+#
+#            LVcent = np.loadtxt(flnm.new('LVcenter', "txt"))
+#            rad, lon, cir = LV_coords(evecs.shape, LVcent)
+#            centers = np.hstack([X.flatten()[:,None], Y.flatten()[:,None]])
+#            centers = np.hstack([centers, np.zeros([centers.shape[0], 1])])
+#            heights = np.ones(centers.shape[0])
+#            for vec in [rad, cir, lon]:
+#                arrow_actor = actor.arrow(centers, vec.reshape(-1,3), RGB.flatten().reshape(-1, 3), heights)
+#                scene.add(arrow_actor)
+

@@ -8,19 +8,16 @@ import time
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib import cm
 
 import cmri.utils as utils
 import cmri.roi as roi
+from cmri.coords import LV_coords
 
 from dipy.io.image import load_nifti, save_nifti
 from dipy.io import read_bvals_bvecs
 from dipy.core.gradients import gradient_table
-from dipy.viz import regtools
-from dipy.viz import window, actor, fury
-from dipy.data import get_sphere
 import dipy.reconst.dti as dti
-from dipy.reconst.dti import fractional_anisotropy, mean_diffusivity, color_fa
+from dipy.reconst.dti import fractional_anisotropy, mean_diffusivity
 
 
 def main(args):
@@ -33,13 +30,14 @@ def main(args):
 
         # load data (could load with sitk and convert to NumPy)
         data, affine, img = load_nifti(flnm.filename, return_img = True)
+        print("data shape:", data.shape)
+        print("affine matrix:", affine)
         data = data.astype(np.float64)
-        print(data.shape)
-        input("waiting")
 
         # load bdata
         bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
         gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
+        print("bvecs:\n", bvecs)
 
         # NOTE: this works, but might be preferable to define a square ROI based on the mask, and take subset of data
         if args.maskfile is not None:
@@ -48,41 +46,56 @@ def main(args):
             mask = np.ones_like(data[..., 0])
 
         if args.outliers is not None:
+            print("removing specified outliers")
             good_img, _ = load_nifti(args.outliers)
             good_img = np.squeeze(np.argwhere(good_img))
             data = data[:, :, good_img]
             bvals = bvals[good_img]
             bvecs = bvecs[good_img]
 
-        # rotate bvecs (such that image cosines can be treated as np.eye(3))
-        if True:
-            rot = affine[0:3, 0:3].copy()
-            for idx in range(3):
-                rot[:,idx] = rot[:,idx] / np.linalg.norm(rot[:,idx])
-            bvecs = (rot[0:3, 0:3].T.dot(bvecs.T)).T
+        if args.reorder is not None:
+            print("reordering/resigning bvec columns")
+
+            if len(args.reorder) != 9:
+                raise ValueError("--reorder (-r) must have 9 entries")
+
+            rot = np.array(args.reorder).reshape(3, 3)
+            bvecs = (rot.dot(bvecs.T)).T
             gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
 
         # fit tensor model
         tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
         tenfit = tenmodel.fit(data, mask) 
 
+        if args.predict is not None:
+
+            # fit tensor model
+            dti_params = np.dstack([tenfit.evals, tenfit.evecs.reshape(tenfit.shape[0:2] + (-1,))])
+            bval_predict = args.predict
+            # FIXME: supply at least one low b0 in order to remove warning
+            gtab_new = gradient_table(np.full_like(bvals, bval_predict), bvecs, b0_threshold = bval_predict)
+            data_f = dti.prediction(dti_params, gtab_new, tenfit.S0_hat)
+            data_f = data_f.mean(axis=-1)
+            save_nifti(flnm.new('predict_mean'), data_f, affine)
+
         # squeeze out the extra dimension out the front
         evecs, evals, S0 = tenfit.evecs, tenfit.evals, tenfit.S0_hat
-        save_nifti(flnm.new('tensor_evecs'), evecs, affine)
-        save_nifti(flnm.new('tensor_evals'), evals, affine)
-        save_nifti(flnm.new('tensor_s0'), S0, affine)
+        save_nifti(flnm.new('evecs'), evecs, affine)
+        save_nifti(flnm.new('evals'), evals, affine)
+        save_nifti(flnm.new('s0'), S0, affine)
 
         # several tensor metrics
         FA = fractional_anisotropy(evals)
         MD = mean_diffusivity(evals)
-        save_nifti(flnm.new('tensor_fa'), FA, affine)
-        save_nifti(flnm.new('tensor_md'), MD, affine)
+        save_nifti(flnm.new('fa'), FA, affine)
+        save_nifti(flnm.new('md'), MD, affine)
 
 
     # select LV center
     if args.lvcent:
 
-        val, _ = load_nifti(flnm.new('tensor_md'))
+        # FIXME: use get_colors()
+        val, _ = load_nifti(flnm.new('md'))
         selector = roi.select_point(val, 0.0, 2.5e-3)
         x, y = selector.run()
         np.savetxt(flnm.new('LVcenter', "txt"), np.array([x, y]))
@@ -91,39 +104,13 @@ def main(args):
     # calculate tensor angles
     if args.angles:
         
-        evecs, affine = load_nifti(flnm.new('tensor_evecs'))
+        # load diffusion tensors
+        evecs, affine = load_nifti(flnm.new('evecs'))
 
         # load LVcenter
         LVcent = np.loadtxt(flnm.new('LVcenter', "txt"))
-
-        [Y, X] = np.meshgrid(range(evecs.shape[1]), range(evecs.shape[0]))
-
-        # radial direction
-        rad = np.zeros([evecs.shape[0], evecs.shape[1], 3])
-        rad[:, :, 0] = X - LVcent[0]
-        rad[:, :, 1] = Y - LVcent[1]
-        rad[:, :, 2] = 0.0
-        rad = rad / np.linalg.norm(rad, axis=-1)[..., None]
-
-        # longitudinal direction
-        lon = np.zeros_like(rad)
-        lon[:, :, 2] = +1.0 
-
-        # circular direction - should be clockwise looking from base to apex
-        cir = np.cross(rad, lon)
-        cir = cir / np.linalg.norm(cir, axis=-1)[..., None]
+        rad, lon, cir = LV_coords(evecs.shape, LVcent)
         
-        # double check that coordinates are okay
-        if False:
-            # NOTE: long-axis is into screen in this view, arrows will appear to have opposite sense
-            s0, _ = load_nifti(flnm.new('tensor_s0'))
-            fig, ax = plt.subplots(1,2)
-            ax[0].imshow(s0.T)
-            ax[1].imshow(s0.T)
-            ax[0].quiver(X[:, :], Y[:, :], rad[:, :, 0], rad[:, :, 1], color = "red", angles = 'xy', scale = s0.shape[0])
-            ax[1].quiver(X[:, :], Y[:, :], cir[:, :, 0], cir[:, :, 1], color = "red", angles = 'xy', scale = s0.shape[0])
-            plt.show()
-
         # determining directions of evecs wrt to LV coordinates
         # -----------------------------------------------------
         ls1 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 0])
@@ -137,23 +124,23 @@ def main(args):
         # non-projection method for calculating helix angle HA
         # ----------------------------------------------------
         HA = np.degrees(np.arcsin(np.abs(ls1)))
-        HA[(ls1 > 0) & (cs1 < 0)] = -HA[(ls1 > 0) & (cs1 < 0)]
-        HA[(ls1 < 0) & (cs1 > 0)] = -HA[(ls1 < 0) & (cs1 > 0)]
-        save_nifti(flnm.new('tensor_ha'), HA, affine)
+        HA[(ls1 > 0) & (cs1 > 0)] = -HA[(ls1 > 0) & (cs1 > 0)]
+        HA[(ls1 < 0) & (cs1 < 0)] = -HA[(ls1 < 0) & (cs1 < 0)]
+        save_nifti(flnm.new('ha'), HA, affine)
 
         # non-projection method for calculating intrusion angle IA
         # --------------------------------------------------------
         IA = np.degrees(np.arcsin(np.abs(rs1)))
         IA[(ls1 > 0) & (rs1 < 0)] = -IA[(ls1 > 0) & (rs1 < 0)]
         IA[(ls1 < 0) & (rs1 > 0)] = -IA[(ls1 < 0) & (rs1 > 0)]
-        save_nifti(flnm.new('tensor_ia'), IA, affine)
+        save_nifti(flnm.new('ia'), IA, affine)
 
-        # non-projection method for calculating intrusion angle E2A 
-        # ---------------------------------------------------------
+        # non-projection method for calculating E2A 
+        # -----------------------------------------
         E2A = np.degrees(np.arcsin(np.abs(rs2)))
         E2A[(rs2 > 0) & (cs2 > 0)] = -E2A[(rs2 > 0) & (cs2 > 0)]
         E2A[(rs2 < 0) & (cs2 < 0)] = -E2A[(rs2 < 0) & (cs2 < 0)]
-        save_nifti(flnm.new('tensor_e2a'), E2A, affine)
+        save_nifti(flnm.new('e2a'), E2A, affine)
 
         # non-projection method for calculating aggregate angle AA (E3A)
         # --------------------------------------------------------------
@@ -161,7 +148,7 @@ def main(args):
         # original, designed to set the sign
         AA[(ls3 > 0) & (rs3 < 0)] = -AA[(ls3 > 0) & (rs3 < 0)]
         AA[(ls3 < 0) & (rs3 > 0)] = -AA[(ls3 < 0) & (rs3 > 0)]
-        save_nifti(flnm.new('tensor_aa'), AA, affine)
+        save_nifti(flnm.new('aa'), AA, affine)
 
         # projection method for calculating helix angle HA
         # ------------------------------------------------
@@ -172,7 +159,7 @@ def main(args):
         tmp = np.abs(np.einsum('ijk,ijk->ij', e1_lc, cir))
         HA_proj = np.degrees(np.arccos(tmp))
         HA_proj *= np.sign(HA)
-        save_nifti(flnm.new('tensor_hap'), HA_proj, affine)
+        save_nifti(flnm.new('hap'), HA_proj, affine)
 
         # projection method for calculating transverse angle TA
         # -----------------------------------------------------
@@ -183,7 +170,7 @@ def main(args):
         tmp = np.abs(np.einsum('ijk,ijk->ij', e1_cr, cir))
         TA = np.degrees(np.arccos(tmp))
         TA *= np.sign(IA)
-        save_nifti(flnm.new('tensor_ta'), TA, affine)
+        save_nifti(flnm.new('ta'), TA, affine)
 
         # projection method for calculating E2A
         # -------------------------------------
@@ -197,131 +184,7 @@ def main(args):
         # 3. rad and circ poing have opposite signs, make positive, else negative
         E2A_proj[(rs2 > 0) & (cs2 > 0)] = -E2A_proj[(rs2 > 0) & (cs2 > 0)]
         E2A_proj[(rs2 < 0) & (cs2 < 0)] = -E2A_proj[(rs2 < 0) & (cs2 < 0)]
-        save_nifti(flnm.new('tensor_e2ap'), E2A_proj, affine)
-
-
-    # simple gridplot of a few key values
-    if args.gridplot:
-
-        # a few useful plots
-        fig, ax = plt.subplots(2, 2)
-        for idx, i in enumerate(["md", "fa", "ha", "hap"]):
-            val, _ = load_nifti(flnm.new('tensor_' + i))
-            val = val.squeeze()
-
-            if i == "md":
-                ii, jj, cmap, vmin, vmax = 0, 0, "turbo", 0.0, 2.5e-3
-            if i == "fa":
-                ii, jj, cmap, vmin, vmax = 0, 1, "turbo", 0.0, 1.0
-            if i == "ha":
-                ii, jj, cmap, vmin, vmax = 1, 0, utils.cyclic_turbo(deg=70), -90.0, +90.0
-            if i == "hap":
-                ii, jj, cmap, vmin, vmax = 1, 1, utils.cyclic_turbo(deg=70), -90.0, +90.0
-            #if i == "ia":
-            #    ii, jj, cmap, vmin, vmax = 1, 1, "bwr", -30.0, +30.0
-
-            im = ax[ii, jj].imshow(val.T, cmap=cmap, vmin=vmin, vmax=vmax)
-            divider = make_axes_locatable(ax[ii, jj])
-            cax = divider.append_axes('right', size='5%', pad=0.05)
-            fig.colorbar(im, cax=cax, orientation='vertical')
-
-            ax[ii,jj].set_title(i)
-
-        plt.show()
-
-
-        # compare projected and non-projected 
-        turbo = cm.get_cmap('turbo', 256)
-        cturbo = utils.cyclic_turbo(deg=70)
-        redblue = cm.get_cmap('bwr', 256)
-        twilight = cm.get_cmap('twilight', 256)
-
-        fig, ax = plt.subplots(3, 2)
-        for idx, i in enumerate(["ha", "hap", "ia", "ta", "e2a", "e2ap"]):
-            val, _ = load_nifti(flnm.new('tensor_' + i))
-            val = val.squeeze()
-
-            if i in ["ha", "hap"]:
-                cmap, vmin, vmax = cturbo, -90.0, +90.0
-                [ii, jj] = [0, 0] if i == "ha" else [0, 1]
-            if i in ["ia", "ta"]:
-                cmap, vmin, vmax = redblue, -60.0, +60.0
-                [ii, jj] = [1, 0] if i == "ia" else [1, 1]
-            if i in ["e2a", "e2ap"]:
-                cmap, vmin, vmax = redblue, -90.0, +90.0
-                [ii, jj] = [2, 0] if i == "e2a" else [2, 1]
-
-            im = ax[ii, jj].imshow(val.T, cmap=cmap, vmin=vmin, vmax=vmax)
-            ax[ii, jj].set_title(i)
-            divider = make_axes_locatable(ax[ii, jj])
-            cax = divider.append_axes('right', size='5%', pad=0.05)
-            fig.colorbar(im, cax=cax, orientation='vertical')
-        plt.show()
-        
-        # aggregate angle plots - testing colormaps
-        fig, ax = plt.subplots(1, 2)
-        val, _ = load_nifti(flnm.new('tensor_aa'))
-        for idx in range(2):
-            if idx == 0:
-                ii, cmap = 0, redblue 
-            if idx == 1:
-                ii, cmap = 1, utils.cyclic_bwr() 
-
-            im = ax[ii].imshow(val.T, cmap=cmap, vmin=-90, vmax=+90)
-            ax[ii].set_title("aa")
-            divider = make_axes_locatable(ax[ii])
-            cax = divider.append_axes('right', size='5%', pad=0.05)
-            fig.colorbar(im, cax=cax, orientation='vertical')
-        plt.show()
-
-
-    # plot tensors
-    if args.plot:
-
-        # load tensor results
-        evecs, affine = load_nifti(flnm.new('tensor_evecs'))
-        evals, _ = load_nifti(flnm.new('tensor_evals'))
-        evals = np.expand_dims(evals, axis=2)
-        evecs = np.expand_dims(evecs, axis=2)
-
-        # load scalar
-        val, _ = load_nifti(flnm.new('tensor_' + args.plot))
-        val = np.expand_dims(val, axis=2)
-        val[np.isnan(val)] = 0.0
-
-        # set colors
-        turbo = cm.get_cmap('turbo', 256)
-        cturbo = utils.cyclic_turbo(deg=70)
-        redblue = cm.get_cmap('bwr', 256)
-        if args.plot == 'fa':
-            RGB = color_fa(val, evecs)
-        if args.plot == 'md':
-            RGB = turbo( np.clip(val / 2.5e-3, 0, 1) )[..., 0:3]
-        if args.plot in ['ha', 'hap']:
-            RGB = cturbo( ( val - (-90) ) / 180)[..., 0:3]
-        if args.plot in ['ia', 'ta', 'e2a']:
-            RGB = redblue( ( val - (-30) ) / 60)[..., 0:3]
-        if args.plot == 'aa':
-            RGB = redblue( ( val - (-60) ) / 120)[..., 0:3]
-
-        # plot with Fury
-        scene = window.Scene()
-        sphere = get_sphere('repulsion724')
-        tensor_actor = actor.tensor_slicer(evals, evecs,
-                                           sphere=sphere,
-                                           scalar_colors=RGB,
-                                           scale=1.0, norm=True)
-
-        # rotate slice so origin is effectively in upper left
-        fury.ui.containers.rotate(tensor_actor, rotation=(180, 1, 0, 0))
-        scene.add(tensor_actor)
-
-        # colormap_lookup_table
-        #tmp = fury.colormap.colormap_lookup_table((0.0, 2.5e-3))  # but this has no links to RGB !actor
-        #scene.add(actor.scalar_bar(tmp, title=args.plot))  # this does not do what I want
-        #scene.add(actor.scalar_bar(title=args.plot))  # this does not do what I want
-
-        window.show(scene)
+        save_nifti(flnm.new('e2ap'), E2A_proj, affine)
 
 
 if __name__ == "__main__":
@@ -337,11 +200,17 @@ if __name__ == "__main__":
     parser.add_argument("-b", "--bfile", type = str, required = True,
                         help = "Name of bval/bvec file, without extension")
 
+    parser.add_argument("-r", "--reorder", type = int, nargs = "+", required = False,
+                        help = "Rotation matrix for reordering / resigning bvec columns")
+
     parser.add_argument("-t", "--tensors", required = False, default = False,
                         action = "store_true", help = "Fit tensors and calculate tensor metrics")
 
+    parser.add_argument("--predict", type = int, required = False, default = None,
+                        help = "Predict average signal for bval specifief here")
+
     parser.add_argument("-o", "--outliers", type = str, required = False,
-                        default = None, help = "Specify file that indicates good images for fitting.")
+                        default = None, help = "Specify file that indicates good images for fitting")
 
     parser.add_argument("-m", "--maskfile", type = str, required = False,
                         default = None, help = "Use a mask when identifying outliers")
@@ -352,17 +221,37 @@ if __name__ == "__main__":
     parser.add_argument("-a", "--angles", required = False, default = False,
                         action = "store_true", help = "Calculate tensor angles")
 
-    parser.add_argument("-g", "--gridplot", required = False, default = False,
-                        action = "store_true", help = "Simple plot of a few key quantities")
-
-    parser.add_argument("-p", "--plot", required = False, default = False,
-                        choices = ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a'], help = "Plot some figures")
-
-    parser.add_argument("-v", "--verbose", required = False, default = False,
-                        action = "store_true", help = "Verbose optimization")
-
     args = parser.parse_args()
 
     main(args)
 
 
+#        # whether to calculate quanties in image coordinates or world coordinates
+#        image_coords = True
+#
+#        # rotate bvecs (such that image cosines can be treated as np.eye(3))
+#        if image_coords:
+#            rot = affine[0:3, 0:3].copy()
+#            for idx in range(3):
+#                rot[:,idx] = rot[:,idx] / np.linalg.norm(rot[:,idx])
+#            print("rot original:\n", rot)
+#
+#            # rotates it to match matlab - but then the images are stored differently in matlab code
+#            if True:
+#                print("rotating bvecs")
+#                #rot = np.array([[0, +1, 0],
+#                #                [-1, 0, 0],
+#                #                [0, 0, -1]])
+#                #rot = np.array([[0, +1, 0],
+#                #                [+1, 0, 0],
+#                #                [0, 0, +1]])
+#
+#                # for the dicom2nifti results
+#                rot = np.array([[+1, 0, 0],
+#                                [0, -1, 0],
+#                                [0, 0, +1]])
+#
+#                # for the dcm2niix results, I am flipping the z-axis
+#                rot = np.array([[+1, 0, 0],
+#                                [0, +1, 0],
+#                                [0, 0, -1]])

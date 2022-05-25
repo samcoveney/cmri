@@ -1,0 +1,108 @@
+#!python
+"""For segmenting."""
+
+import argparse
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import cm
+
+import cmri.utils as utils
+import cmri.roi as roi
+
+from dipy.io.image import load_nifti, save_nifti
+from dipy.io import read_bvals_bvecs
+from dipy.core.gradients import gradient_table
+from dipy.viz import window, actor, fury
+from dipy.data import get_sphere
+from dipy.reconst.dti import color_fa
+
+
+def main(args):
+
+    # set filename
+    flnm = utils.Filename(args.filename, "", args.ext)
+
+    # load tensor results
+    if args.tensors is not None:
+        evecs, _ = load_nifti(flnm.new("evecs"))
+        evals, _ = load_nifti(flnm.new("evals"))
+        evals = np.expand_dims(evals, axis=2)
+        evecs = np.expand_dims(evecs, axis=2)
+
+    # setup list of dictionaries for colors
+    #['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a']
+    scalar_dict = [{} for c in args.color] 
+    for cc, c in enumerate(args.color):
+        scalar, affine = load_nifti(flnm.new(c))
+        scalar_dict[cc]["name"] = c
+        scalar_dict[cc]["values"] = scalar
+
+    # masks
+    if args.maskfile is not None:
+        mask, _ = load_nifti(args.maskfile)
+        x1, x2, y1, y2 = roi.square_from_mask(mask, return_indices=True)
+
+        if args.tensors is not None:
+            evecs, evals = evecs[x1:x2, y1:y2], evals[x1:x2, y1:y2]
+
+        for idx in range(len(scalar_dict)):
+            scalar_dict[idx]["values"] = scalar_dict[idx]["values"][x1:x2, y1:y2]
+
+    if args.tensors is None:
+        seg_mask = roi.segment(scalar_dict).run()
+    else:
+        seg_mask = roi.segment(scalar_dict, evecs, evals).run()
+
+    # accout for original mask 
+    if args.maskfile is not None:
+        seg_mask = np.pad(seg_mask, [(x1, mask.shape[0]-x2), (y1, mask.shape[1]-y2)])
+
+    # save mask
+    save_nifti(flnm.new("seg"), seg_mask.astype(int), affine)
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description = "Plot contents of NIfTI files.") 
+
+    parser.add_argument("-f", "--filename", type = str, required = True,
+                        help = "Name of NIFTI file used for color")
+
+    parser.add_argument("-e", "--ext", type = str, required = False, default = "nii",
+                        choices = ["nii", "nii.gz"], help = "Extension for saved files")
+
+    #parser.add_argument("-b", "--bfile", type = str, required = True,
+    #                    help = "Name of bval/bvec file, without extension")
+
+    parser.add_argument("-d", "--dim", type = int, required = False, default = 2,
+                        help = "Dimension to extract slices from (index from 0)")
+
+    parser.add_argument("-s", "--slice", type = int, required = False, default = 0,
+                        help = "Slice index (index from 0)")
+
+    #parser.add_argument("-c", "--color", required = True, default = False,
+    #                    choices = ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a'], help = "Plot some figures")
+
+    parser.add_argument("-c", "--color", type = str, nargs = "+", required = True, default = None,
+                        help = "List of colors, used to load --filename_\"color\".--ext for plotting")
+
+    #parser.add_argument("--eigen", required = False, type = str, default = None,
+    #                    help = "Base name of evecs and evals files")
+
+    parser.add_argument("-t", "--tensors", required = False, default = False,
+                        action = "store_true", help = "Plot using tensors")
+
+    parser.add_argument("-m", "--maskfile", type = str, required = False,
+                        default = None, help = "Use a mask when identifying outliers")
+
+    parser.add_argument("-g", "--gridplot", required = False, default = False,
+                        action = "store_true", help = "Simple plot of a few key quantities")
+
+    # NOTE: will put segementation into a different script later on
+    parser.add_argument("-seg", "--segment", required = False, default = False,
+                        action = "store_true", help = "Segmentation.")
+
+    args = parser.parse_args()
+
+    main(args)
+

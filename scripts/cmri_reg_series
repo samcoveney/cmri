@@ -148,6 +148,8 @@ def main(args):
 
     # load data (could load with sitk and convert to NumPy)
     data, affine, img = load_nifti(flnm.filename, return_img = True)
+    print("data shape:", data.shape)
+    print("affine matrix:", affine)
     data = data[:, :, slice_index, :].astype(np.float64)
 
     # load bdata

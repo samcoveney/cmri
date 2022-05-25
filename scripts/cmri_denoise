@@ -57,7 +57,7 @@ def main(args):
 
         # denoise array
         data_denoised = localpca(tmp, sigma, tau_factor=2.3,
-                                  patch_radius=patch_radius)
+                                  patch_radius=patch_radius, suppress_warning=False)
         data_denoised = np.squeeze(data_denoised)
         save_nifti(flnm.new("denoised_pr_" + str(patch_radius)),
                    data_denoised, affine)
@@ -105,8 +105,15 @@ def main(args):
 
             MI[idx] = res
 
+        # crop the images before the quality control GUI
+        if args.maskfile is not None:
+            x1, x2, y1, y2 = roi.square_from_mask(mask, return_indices=True)
+            data = data[x1:x2, y1:y2]
+            data_f = data_f[x1:x2, y1:y2]
+    
         # GUI to select threshold
-        good_img = roi.select_outliers(data, MI)
+        good_img = roi.select_outliers(data, data_f, MI, bvals).run()
+        print("good_img:", good_img)
         save_nifti(flnm.new("outliers"), good_img, affine)
 
 

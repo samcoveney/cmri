@@ -98,3 +98,38 @@ def cyclic_bwr():
     print(new)
     
     return new
+
+
+def get_colors(color):
+    """Return colormaps and ranges for different plotting quantities"""
+
+    # colors needed for plotting
+    
+    if color in  ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a']:
+        if color in ["ha", "hap"]:
+            cturbo = cyclic_turbo(deg=80)
+            cmap, vmin, vmax = cturbo, -90.0, +90.0
+
+        if color in ["ia", "ta"]:
+            redblue = cm.get_cmap('bwr', 256)
+            cmap, vmin, vmax = redblue, -60.0, +60.0
+
+        if color in ["e2a", "e2ap"]:
+            redblue = cm.get_cmap('bwr', 256)
+            cmap, vmin, vmax = redblue, -90.0, +90.0
+
+        if color in ["fa"]:
+            turbo = cm.get_cmap('turbo', 256)
+            cmap, vmin, vmax = turbo, 0.0, 1.0
+
+        if color in ["md"]:
+            turbo = cm.get_cmap('turbo', 256)
+            cmap, vmin, vmax = turbo, 0.0e-3, 2.5e-3
+
+    else:
+
+        turbo = cm.get_cmap('gray', 256)
+        cmap, vmin, vmax = turbo, None, None
+
+    return cmap, vmin, vmax
+
