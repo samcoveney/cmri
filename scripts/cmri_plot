@@ -8,6 +8,7 @@ from matplotlib import cm
 
 import cmri.utils as utils
 import cmri.roi as roi
+from cmri.plot import tensor_plot_2d
 
 from dipy.io.image import load_nifti, save_nifti
 from dipy.io import read_bvals_bvecs
@@ -53,7 +54,7 @@ def main(args):
         cmap, vmin, vmax = utils.get_colors(color)
 
         fig, ax = plt.subplots(1,1)
-        im = ax.imshow(scalars.T, cmap=cmap, vmin=vmin, vmax=vmax)
+        im = ax.imshow(scalars, cmap=cmap, vmin=vmin, vmax=vmax)
         plt.title(color)
         plt.colorbar(im)
         plt.show()
@@ -87,7 +88,7 @@ def main(args):
 
         # 2D tensor plot
         if args.plot2dtensors:
-            roi.tensor_plot_2d(evecs, evals, scalars, args.color)
+            tensor_plot_2d(evecs, evals, scalars, args.color)
 
         # 3d tensor plot
         if args.plot3d:

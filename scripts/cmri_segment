@@ -48,7 +48,7 @@ def main(args):
         for idx in range(len(scalar_dict)):
             scalar_dict[idx]["values"] = scalar_dict[idx]["values"][x1:x2, y1:y2]
 
-    # FIXME: need to ensure the tensors are the correct orientation
+    # epi/endo surface segmentation
     if args.surf:
 
         # call segmentation GUI
@@ -64,6 +64,7 @@ def main(args):
         # save mask
         save_nifti(flnm.new("seg"), seg_mask.astype(int), affine)
 
+    # AHA model segmentation
     if args.aha is not None:
 
         seg = 6 if args.aha in ["base", "mid"] else 4

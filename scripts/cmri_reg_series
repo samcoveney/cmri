@@ -3,140 +3,15 @@
 
 import argparse
 import numpy as np
-import numbers
-import time
-
-import SimpleITK as sitk
 
 from dipy.io.image import load_nifti, save_nifti
 from dipy.io import read_bvals_bvecs
 from dipy.core.gradients import gradient_table
 
 import cmri.utils as utils
-from cmri.roi import create_mask
-from cmri.reg import affine_registration_sitkimage
+from cmri.roi import Select_mask
+from cmri.reg import register_dwi_series
     
-
-def register_series(series, ref, pipeline=None, denoise=True, static_mask=None, verbose=False):
-    """Register a series to a reference image.
-
-    Parameters
-    ----------
-
-    series : NumPy array 
-
-    ref : int, or NumPy array
-
-    pipeline : list
-
-    denoise : bool
-
-    static_mask : NumPy array
-
-    verbose : bool, default False
-
-    Returns
-    -------
-
-    """
-
-    # for collecting results
-    xformed = np.zeros(series.shape)
-
-    # convert NumPy array into ITK image series
-    series = sitk.GetImageFromArray(series, isVector=True)
-    
-    if static_mask is not None:
-        static_mask = sitk.GetImageFromArray(static_mask)
-        static_mask = sitk.Cast(static_mask, sitk.sitkUInt8)
-
-    filt2D = sitk.VectorIndexSelectionCastImageFilter()
-    num_acq = series.GetNumberOfComponentsPerPixel()
-
-    if isinstance(ref, numbers.Number):
-        ref_as_idx = ref
-        filt2D.SetIndex(ref)
-        ref = filt2D.Execute(series)
-    else:
-        ref_as_idx = False
-        ref = sitk.GetImageFromArray(ref)
-
-    # denoise ref image
-    if denoise:
-        denoiseFilter = sitk.PatchBasedDenoisingImageFilter()
-        ref = denoiseFilter.Execute(ref)
-
-    time_per_run = 0.0
-    time_left = "??:??:??"
-    for ii in range(num_acq):
-        start_time = time.time()
-        utils.progress_bar(ii, num_acq, prefix = '', suffix = ' ' + time_left, decimals = 0, length = 20, fill = '#')
-
-        filt2D.SetIndex(ii)
-        this_moving = filt2D.Execute(series)
-        if isinstance(ref_as_idx, numbers.Number) and ii == ref_as_idx:
-            # This is the reference! No need to move and the xform is I(4):
-            xformed[..., ii] = sitk.GetArrayFromImage(this_moving)
-        else:
-
-            # denoise moving image
-            if denoise:
-                this_moving_denoised = denoiseFilter.Execute(this_moving)
-            else:
-                this_moving_denoised = this_moving
-
-            transformed, params = affine_registration_sitkimage(
-                this_moving_denoised, ref,
-                pipeline=pipeline,
-                static_mask=static_mask,
-                verbose=verbose)
-
-            # apply transformation to non-denoised image
-            if denoise:
-                transformed = sitk.Transformix(this_moving, params)
-
-            xformed[..., ii] = sitk.GetArrayFromImage(transformed)
-
-            time_per_run = time_per_run + (time.time() - start_time - time_per_run) / (ii + 1) 
-            time_left = time.strftime('%H:%M:%S', time.gmtime((num_acq - ii - 1)*time_per_run))
-
-    return xformed
-
-
-def register_dwi_series(data, gtab, b0_ref=0, pipeline=None, denoise=True,
-                        static_mask=None, verbose=False):
-    """Register a DWI series to the mean of the B0 images in that series.
-
-    Parameters
-    ----------
-
-    Returns
-    -------
-
-    """
-
-    # First, register the b0s to one image and average
-    if np.sum(gtab.b0s_mask) > 1:
-        b0_img = data[..., gtab.b0s_mask]
-        trans_b0 = register_series(b0_img, ref=b0_ref,
-                                   pipeline=pipeline,
-                                   denoise=denoise,
-                                   static_mask=static_mask,
-                                   verbose=verbose)
-        ref_data = np.mean(trans_b0, -1)
-    else:
-        trans_b0 = data[..., gtab.b0s_mask]
-        ref_data = np.squeeze(trans_b0, axis=-1)
-
-    # Second, register all images to ref_data  
-    xformed = register_series(data, ref_data,
-                              pipeline=pipeline,
-                              denoise=denoise,
-                              static_mask=static_mask,
-                              verbose=verbose)
-
-    return xformed 
-
 
 def main(args):
 
@@ -160,17 +35,19 @@ def main(args):
     if args.mask:
 
         tmp = data[:, :, gtab.b0s_mask][..., args.b0ref]
-        ROI = create_mask(tmp)
-        save_nifti(flnm.new("mask_" + str(slice_index)), ROI.mask, affine)
+        tmp = [{"name": "gray", "values": tmp}]
+        mask = Select_mask(tmp).run()
+        save_nifti(flnm.new("mask_" + str(slice_index)), mask, affine)
 
     # perform registration
     if args.reg:
 
-        mask, _, _ = load_nifti(flnm.new("mask_" + str(slice_index)), return_img = True)
+        mask, _ = load_nifti(flnm.new("mask_" + str(slice_index)))
 
         reg_data = register_dwi_series(data, gtab=gtab, b0_ref=args.b0ref,\
                                        denoise=True, static_mask=mask,\
-                                       verbose=args.verbose)
+                                       verbose=args.verbose,\
+                                       iterations=args.iter)
 
         save_nifti(flnm.new("reg_" + str(slice_index)), reg_data, affine)
 
@@ -202,6 +79,9 @@ if __name__ == "__main__":
 
     parser.add_argument("-v", "--verbose", required = False, default = False,
                         action = "store_true", help = "Verbose optimization")
+
+    parser.add_argument("-i", "--iter", type = int, required = False, default = None,
+                        help = "number of iterations per resolution")
 
     args = parser.parse_args()
 

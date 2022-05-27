@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 import cmri.utils as utils
 import cmri.roi as roi
+from cmri.plot import Select_outliers
 
 import SimpleITK as sitk
 
@@ -112,7 +113,7 @@ def main(args):
             data_f = data_f[x1:x2, y1:y2]
     
         # GUI to select threshold
-        good_img = roi.select_outliers(data, data_f, MI, bvals).run()
+        good_img = Select_outliers(data, data_f, MI, bvals).run()
         print("good_img:", good_img)
         save_nifti(flnm.new("outliers"), good_img, affine)
 
