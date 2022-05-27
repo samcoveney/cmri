@@ -63,6 +63,10 @@ def main(args):
 
         print("Plotting tensors in 3D")
 
+        if args.evecs == None or args.evals == None:
+            print("Must supply eigenvectors and eigenvalues for tensor plots.")
+            raise SystemExit 
+
         # load tensor results
         evecs, _ = load_nifti(args.evecs)
         evals, _ = load_nifti(args.evals)

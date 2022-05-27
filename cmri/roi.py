@@ -2,6 +2,7 @@
 
 import sys
 import numpy as np
+from scipy.spatial.distance import cdist
 
 import matplotlib.pyplot as plt
 from matplotlib import cm
@@ -64,40 +65,143 @@ def square_from_mask(mask, return_indices=False):
         return x_tmp[0], x_tmp[-1] + 1, y_tmp[0], y_tmp[-1] + 1
 
 
-class select_point:
-    """Select a coordinate by clicking on an image."""
+class Multiplot(object):
+    """Plotter for multiple images of the same size."""
 
-    def __init__(self, img, vmin=None, vmax=None):
+    def __init__(self, scalars, evecs=None, evals=None):
 
-        self.img = img
-        self.vmin = self.img.min() if vmin is None else vmin
-        self.vmax = self.img.max() if vmax is None else vmax
-        self.x = None
-        self.y = None
+        self.evecs, self.evals, self.scalars =\
+        evecs, evals, scalars
 
+        [self.Nx, self.Ny] = self.scalars[0]["values"].shape 
+        x, y = np.mgrid[:self.Nx, :self.Ny]
+        self.coors = np.hstack((x.reshape(-1, 1), y.reshape(-1,1)))
+
+        # store the color info here
+        for idx in range(len(self.scalars)):
+            scalars = self.scalars[idx]["values"]
+            name = self.scalars[idx]["name"]
+            cmap, vmin, vmax = utils.get_colors(name)
+            self.scalars[idx]["cmap"] = cmap
+            if vmin is None: vmin = scalars.min()
+            if vmax is None: vmax = scalars.max()
+            self.scalars[idx]["vmin"] = vmin
+            self.scalars[idx]["vmax"] = vmax
+            self.scalars[idx]["vdif"] = vmax - vmin 
+
+        # which color
+        self.cidx = 0
+
+        # setup plot
+        plt.style.use('dark_background')
+        self.fig = plt.figure()
+        self.ax = self.fig.add_subplot()
+
+        self.fig.canvas.draw_idle()  # NOTE: perhaps pointless, draw happens in update
+        
+        if (self.evecs is not None) and (self.evals is not None): 
+            self.ax, self.cbar = tensor_plot_2d(self.evecs, self.evals, self.scalars[self.cidx]["values"], self.scalars[self.cidx]["name"], self.ax)
+        else:
+            cmap, vmin, vmax = utils.get_colors(self.scalars[self.cidx]["name"])
+            self.im = self.ax.imshow(self.scalars[self.cidx]["values"].T, cmap=cmap, vmin=vmin, vmax=vmax)
+            self.cbar = plt.colorbar(self.im, ax=self.ax)
+            self.cbar.set_label(self.scalars[self.cidx]["name"])
+
+        self.cbar.set_label(self.scalars[self.cidx]["name"])
+        self.fig.canvas.mpl_connect('key_press_event', self.key_press)
+
+
+    def key_press(self, event):
+        """Changes scalars and color limits in the plot."""
+        print('press:', event.key)
+
+        sys.stdout.flush()
+        if event.key == " ":
+            print("pressed space")
+            self.cidx += 1
+            if self.cidx == len(self.scalars):
+                self.cidx = 0
+            
+            scalars = self.scalars[self.cidx]["values"].flatten()
+            name = self.scalars[self.cidx]["name"]
+            self.cbar.set_label(self.scalars[self.cidx]["name"])
+            cmap = self.scalars[self.cidx]["cmap"]
+            vmin = self.scalars[self.cidx]["vmin"]
+            vmax = self.scalars[self.cidx]["vmax"]
+
+            if (self.evecs is not None) and (self.evals is not None): 
+                self.ax.collections[0].set_array(scalars)
+                self.ax.collections[0].set_clim(vmin, vmax)
+                self.ax.collections[0].set_cmap(cmap)
+            else:
+                self.im.set_data(scalars.reshape(self.Nx, self.Ny).T)
+                self.im.set_clim(vmin, vmax)
+                self.im.set_cmap(cmap)
+       
+            self.fig.canvas.draw_idle()
+            
+        if event.key in ["left", "right", "down", "up"]:
+            vmin = self.scalars[self.cidx]["vmin"]
+            vmax = self.scalars[self.cidx]["vmax"]
+            vdif = self.scalars[self.cidx]["vdif"]
+            factor = 0.05
+            if event.key == "left":
+                vmin = vmin - factor*vdif
+            if event.key == "right":
+                vmin = vmin + factor*vdif
+            if event.key == "down":
+                vmax = vmax - factor*vdif
+            if event.key == "up":
+                vmax = vmax + factor*vdif
+
+            if vmax > vmin:
+                self.scalars[self.cidx]["vmin"] = vmin
+                self.scalars[self.cidx]["vmax"] = vmax
+
+            if (self.evecs is not None) and (self.evals is not None): 
+                self.ax.collections[0].set_clim(vmin, vmax)
+            else:
+                self.im.set_clim(vmin, vmax)
+
+            self.fig.canvas.draw_idle()
 
     def run(self):
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
+        """Just plotting"""
 
-        ax.imshow(self.img.T, cmap="turbo", vmin=self.vmin, vmax=self.vmax)
-        ax.set_title("Click on LV center, close when done")
+        plt.show()
+    
 
+class Select_point(Multiplot):
+    """Select a coordinate by clicking on an image."""
+
+    def __init__(self, scalars, evecs=None, evals=None):
+        super().__init__(scalars, evecs, evals)
+
+    def run(self):
+        """Things specific to setting up and running this class."""
+
+        # add callback
+        self.fig.canvas.mpl_connect('button_press_event', self.button_press_callback)
+
+        # coords of selection
+        self.x, self.y = None, None
         self.point = None
 
-        def onclick(event):
-            print('button=%d, x=%d, y=%d, xdata=%f, ydata=%f' %
-                  (event.button, event.x, event.y, event.xdata, event.ydata))
-            if self.point is not None:
-                self.point[0].remove()
-            self.point = plt.plot(event.xdata, event.ydata, 'o', color = 'red')
-            self.x, self.y = event.xdata, event.ydata
-            fig.canvas.draw()
-
-        cid = fig.canvas.mpl_connect('button_press_event', onclick)
+        self.ax.set_title("Click on LV center, close when done")
         plt.show()
 
         return self.x, self.y
+
+    def button_press_callback(self, event):
+
+        if self.point is None:
+            self.point, = self.ax.plot(event.xdata, event.ydata, 'o', color = 'white')
+        else:
+            self.point.set_xdata(event.xdata)
+            self.point.set_ydata(event.ydata)
+
+        self.x, self.y = event.xdata, event.ydata
+        self.fig.canvas.draw()
 
 
 class select_outliers:
@@ -238,95 +342,43 @@ def tensor_plot_2d(evecs, evals, scalars, color, ax=None):
         return ax, cbar
 
 
-class segment():
+class Segment_surfs(Multiplot):
     """Segment image with two surfaces."""
 
     def __init__(self, scalars, evecs=None, evals=None):
+        super().__init__(scalars, evecs, evals)
 
-        self.evecs, self.evals, self.scalars =\
-        evecs, evals, scalars
+    def run(self):
+        """Things specific to setting up and running this class."""
 
-        [self.Nx, self.Ny] = self.scalars[0]["values"].shape 
+        # add callbacks
+        self.fig.canvas.mpl_connect('button_press_event', self.button_press_callback)
+        self.fig.canvas.mpl_connect('button_release_event', self.button_release_callback)
+        self.fig.canvas.mpl_connect('motion_notify_event', self.motion_notify_callback)
 
-        # store the color info here
-        for idx in range(len(self.scalars)):
-            scalars = self.scalars[idx]["values"]
-            name = self.scalars[idx]["name"]
-            cmap, vmin, vmax = utils.get_colors(name)
-            self.scalars[idx]["cmap"] = cmap
-            if vmin is None: vmin = scalars.min()
-            if vmax is None: vmax = scalars.max()
-            self.scalars[idx]["vmin"] = vmin
-            self.scalars[idx]["vmax"] = vmax
-            self.scalars[idx]["vdif"] = vmax - vmin 
+        self.points, self.curve = [None, None], [None, None]
+        self.pind = None # point index
+        self.srf = 0 # index of surface
+        self.epsilon = 10 # tolerance for selecting points
+        self.ls = "-w" # curve style
 
-        # which surface (0: epi, 1: endo)
-        self.srf = 1
-
+        # for storing surface coordinates
         self.x, self.y = [None, None], [None, None]
         for srf in [0, 1]:
             self.x[srf] = np.array([], dtype=float)
             self.y[srf] = np.array([], dtype=float)
 
-        # which color
-        self.cidx = 0
+        # NOTE: will need two masks
+        self.mask = [None, None]
+        self.mask[0] = np.ones((self.Nx, self.Ny), dtype=bool)
+        self.mask[1] = np.ones((self.Nx, self.Ny), dtype=bool)
+        self.switch_surface()
+        self.update()
 
-        # points index
-        self.pind = None
+        plt.show()
 
-        self.epsilon = 10
-
-
-    def update(self):
-
-        # update existing points 
-        if self.points[self.srf] is not None:
-            self.points[self.srf].set_xdata(self.x[self.srf])
-            self.points[self.srf].set_ydata(self.y[self.srf])
-        
-        # plot points for first time
-        if self.points[self.srf] is None and self.x[self.srf].size > 0:
-            self.points[self.srf], = self.ax.plot(self.x[self.srf], self.y[self.srf], 'ow')
-    
-        # update curve
-        k = 3
-        if self.x[self.srf].size >= k:
-            X = np.r_[self.x[self.srf], self.x[self.srf][0]]
-            Y = np.r_[self.y[self.srf], self.y[self.srf][0]]
-            tck, u = interpolate.splprep([X, Y], s=0, per=True, k=k)
-            xi, yi = interpolate.splev(np.linspace(0, 1, 1000), tck)
-
-            # update existing curve
-            if self.curve[self.srf] is not None:
-                self.curve[self.srf].set_xdata(xi)
-                self.curve[self.srf].set_ydata(yi)
-            # plot curve for first time
-            else:
-                self.curve[self.srf], = self.ax.plot(xi, yi, self.ls)
-
-        # create mask
-        if self.curve[self.srf] is not None:
-            tmp = np.vstack([xi, yi]).T
-            poly_path=Path(tmp)
-
-            # FIXME: fix this, just save these pixel centres in advance
-            print(self.Nx, self.Ny)
-            x, y = np.mgrid[:self.Nx, :self.Ny]
-            coors = np.hstack((x.reshape(-1, 1), y.reshape(-1,1)))
-            self.mask[self.srf][:, :] = poly_path.contains_points(coors).reshape(self.Nx, self.Ny)
-
-            mask_total = self.mask[0] * ~self.mask[1]
-            alpha = 0.5 * (mask_total + 1)
-
-            if (self.evecs is not None) and (self.evals is not None): 
-                self.ax.collections[0].set_alpha(alpha)
-            else:
-                self.im.set_alpha(alpha.T)
-
-
-        # redraw canvas while idle
-        self.fig.canvas.draw_idle()
-
+        # return the mask
+        return self.mask[0] * ~self.mask[1]
 
     def button_press_callback(self, event):
         'whenever a mouse button is pressed'
@@ -353,8 +405,85 @@ class segment():
         if event.button == 2:  # switch surface
             self.switch_surface()
 
+    def button_release_callback(self, event):
+        'whenever a mouse button is released'
+        if event.button in [1, 3]:
+            self.reorder()
+            self.update()
+            self.pind = None
+        else:
+            return
+
+    def motion_notify_callback(self, event):
+        'on mouse movement'
+        if self.pind is None:
+            return
+        if event.inaxes is None:
+            return
+        if event.button != 1:
+            return
+        
+        self.x[self.srf][self.pind] = event.xdata
+        self.y[self.srf][self.pind] = event.ydata
+
+        self.update()
+
+    def update(self):
+
+        # update existing points 
+        if self.points[self.srf] is not None:
+            self.points[self.srf].set_xdata(self.x[self.srf])
+            self.points[self.srf].set_ydata(self.y[self.srf])
+        
+        # plot points for first time
+        if self.points[self.srf] is None and self.x[self.srf].size > 0:
+            self.points[self.srf], = self.ax.plot(self.x[self.srf], self.y[self.srf], 'ow')
+    
+        # update curve
+        k = 3
+        if self.x[self.srf].size >= k:
+            X = np.r_[self.x[self.srf], self.x[self.srf][0]]
+            Y = np.r_[self.y[self.srf], self.y[self.srf][0]]
+            tck, u = interpolate.splprep([X, Y], s=0, per=True, k=k)
+            xi, yi = interpolate.splev(np.linspace(0, 1, 1000), tck)
+
+            # snap curves to nearest pixels
+            if False:
+                curve_coors = np.hstack((xi.reshape(-1, 1), yi.reshape(-1,1)))
+                tmp = self.coors[np.argmin(cdist(curve_coors, self.coors), axis=-1)]
+                xi, yi = tmp[:, 0], tmp[:, 1]
+
+            # update existing curve
+            if self.curve[self.srf] is not None:
+                self.curve[self.srf].set_xdata(xi)
+                self.curve[self.srf].set_ydata(yi)
+            # plot curve for first time
+            else:
+                self.curve[self.srf], = self.ax.plot(xi, yi, self.ls)
+
+        # create mask
+        if self.curve[self.srf] is not None:
+            tmp = np.vstack([xi, yi]).T
+            poly_path=Path(tmp)
+
+            self.mask[self.srf][:, :] = poly_path.contains_points(self.coors).reshape(self.Nx, self.Ny)
+
+            mask_total = self.mask[0] * ~self.mask[1]
+            alpha = (mask_total + 0.3) / (1.3) 
+
+            if (self.evecs is not None) and (self.evals is not None): 
+                self.ax.collections[0].set_alpha(alpha)
+            else:
+                self.im.set_alpha(alpha.T)
+
+        self.ax.set_xlim(-0.5, self.Nx-0.5)
+        self.ax.set_ylim(self.Ny-0.5, -0.5)
+
+        # redraw canvas while idle
+        self.fig.canvas.draw_idle()
 
     def reorder(self):
+        """ensure points are ordered to create a non-crossing loop"""
         # re-arrange the points to make a circle
         com = np.array([self.x[self.srf].mean(), self.y[self.srf].mean()])
         x = self.x[self.srf] - com[0]
@@ -369,20 +498,9 @@ class segment():
         self.x[self.srf] = self.x[self.srf][args]
         self.y[self.srf] = self.y[self.srf][args]
 
-
-    def button_release_callback(self, event):
-        'whenever a mouse button is released'
-        if event.button in [1, 3]:
-            self.reorder()
-            self.update()
-            self.pind = None
-        else:
-            return
-
-
-    # NOTE: this seems very clunky...
     def get_ind_under_point(self, event):
-        'get the index of the vertex under point if within epsilon tolerance'
+        """get the index of the vertex under point if within epsilon tolerance"""
+        # NOTE: this seems very clunky...
 
         if self.x[self.srf].size > 0:
             # display coords
@@ -407,29 +525,6 @@ class segment():
         print(ind)
         return ind
 
-
-    def motion_notify_callback(self, event):
-        'on mouse movement'
-        if self.pind is None:
-            return
-        if event.inaxes is None:
-            return
-        if event.button != 1:
-            return
-        
-        #update yvals
-        #print('motion x: {0}; y: {1}'.format(event.xdata,event.ydata))
-        #print("BEFORE self.x[self.srf] and y:", self.x[self.srf], self.y[self.srf])
-        #print("event:", event.xdata, event.ydata)
-        #print(self.pind)
-        self.x[self.srf][self.pind] = event.xdata
-        self.y[self.srf][self.pind] = event.ydata
-        #print("AFTER self.x[self.srf] and y:", self.x[self.srf], self.y[self.srf])
-        #print(self.x[self.srf][self.pind])
-
-        self.update()
-
-
     def switch_surface(self):
         """Cycle through modes"""
 
@@ -445,106 +540,131 @@ class segment():
         self.fig.canvas.draw_idle()
 
 
-    def key_press(self, event):
-        print('press:', event.key)
+class Segment_aha(Multiplot):
+    """Place AHA template over image."""
 
-        sys.stdout.flush()
-        if event.key == " ":
-            print("pressed space")
-            self.cidx += 1
-            if self.cidx == len(self.scalars):
-                self.cidx = 0
-            
-            scalars = self.scalars[self.cidx]["values"].flatten()
-            name = self.scalars[self.cidx]["name"]
-            self.cbar.set_label(self.scalars[self.cidx]["name"])
-            cmap = self.scalars[self.cidx]["cmap"]
-            vmin = self.scalars[self.cidx]["vmin"]
-            vmax = self.scalars[self.cidx]["vmax"]
+    def __init__(self, scalars, evecs=None, evals=None):
+        super().__init__(scalars, evecs, evals)
 
-            if (self.evecs is not None) and (self.evals is not None): 
-                self.ax.collections[0].set_array(scalars)
-                self.ax.collections[0].set_clim(vmin, vmax)
-                self.ax.collections[0].set_cmap(cmap)
-            else:
-                self.im.set_data(scalars.reshape(self.Nx, self.Ny).T)
-                self.im.set_clim(vmin, vmax)
-                self.im.set_cmap(cmap)
-       
-            self.fig.canvas.draw_idle()
-            
-        if event.key in ["left", "right", "down", "up"]:
-            vmin = self.scalars[self.cidx]["vmin"]
-            vmax = self.scalars[self.cidx]["vmax"]
-            vdif = self.scalars[self.cidx]["vdif"]
-            factor = 0.05
-            if event.key == "left":
-                vmin = vmin - factor*vdif
-            if event.key == "right":
-                vmin = vmin + factor*vdif
-            if event.key == "down":
-                vmax = vmax - factor*vdif
-            if event.key == "up":
-                vmax = vmax + factor*vdif
+    def run(self, segs):
+        """Things specific to setting up and running this class."""
 
-            self.scalars[self.cidx]["vmin"] = vmin
-            self.scalars[self.cidx]["vmax"] = vmax
-
-            if (self.evecs is not None) and (self.evals is not None): 
-                self.ax.collections[0].set_clim(vmin, vmax)
-            else:
-                self.im.set_clim(vmin, vmax)
-
-            self.fig.canvas.draw_idle()
-
-
-    def run(self):
-
-        #self.fig, self.ax = plt.subplots(1, 1, sharex=True) # NOTE: define in _init_()
-        plt.style.use('dark_background')
-        self.fig = plt.figure()
-        self.ax = self.fig.add_subplot()
-
-        self.fig.canvas.draw_idle()  # NOTE: perhaps pointless, draw happens in update
-        
-        cmap, vmin, vmax = utils.cyclic_turbo(deg=80), -90.0, +90.0
-
-
-        # TODO: give it the first color entry here
-        if (self.evecs is not None) and (self.evals is not None): 
-            self.ax, self.cbar = tensor_plot_2d(self.evecs, self.evals, self.scalars[self.cidx]["values"], self.scalars[self.cidx]["name"], self.ax)
-        else:
-            cmap, vmin, vmax = utils.get_colors(self.scalars[self.cidx]["name"])
-            self.im = self.ax.imshow(self.scalars[self.cidx]["values"].T, origin = "lower", cmap=cmap, vmin=vmin, vmax=vmax)
-            self.cbar = plt.colorbar(self.im, ax=self.ax)
-            self.cbar.set_label(self.scalars[self.cidx]["name"])
-
-
-        self.cbar.set_label(self.scalars[self.cidx]["name"])
-        #import IPython as ipy
-        #ipy.embed()
-        #self.ax.imshow(self.img.T, cmap=cmap, vmin=vmin, vmax=vmax)
-
+        # add callbacks
         self.fig.canvas.mpl_connect('button_press_event', self.button_press_callback)
-        self.fig.canvas.mpl_connect('button_release_event', self.button_release_callback)
-        self.fig.canvas.mpl_connect('motion_notify_event', self.motion_notify_callback)
-        self.fig.canvas.mpl_connect('key_press_event', self.key_press)
 
+        self.segs = segs  # number of segments
+        self.srf = 0  #  0: LVcent, 1: insertion point
+        # NOTE: probably would be better as array(s), one for LVcent, one for insertion
+        self.x, self.y = [None, None], [None, None]
+        for srf in [0, 1]:
+            self.x[srf] = np.array([], dtype=float)
+            self.y[srf] = np.array([], dtype=float)
+
+        self.epsilon = 10
         # NOTE: will need two of these, one per surface, store as list
         self.points, self.curve = [None, None], [None, None]
+        self.circle1 = None
+        self.lines = [None for i in range(6)]
         self.ls = "-w" # curve style
 
-
-        # NOTE: will need two masks
-        self.mask = [None, None]
-        self.mask[0] = np.ones((self.Nx, self.Ny), dtype=bool)
-        self.mask[1] = np.ones((self.Nx, self.Ny), dtype=bool)
-        self.switch_surface()
         self.update()
 
+        plt.title("left-click: LV center, right-click: insertion point")
         plt.show()
 
-        # return the mask
-        return self.mask[0] * ~self.mask[1]
+        # calculate the segment labels 
+        vec = np.array([self.x[1] - self.x[0], self.y[1] - self.y[0]]) # from LVcent to insertion point
+        vec_other = self.coors - np.array([self.x[0], self.y[0]]).T
+        vec /= np.linalg.norm(vec)
+        vec_other /= np.linalg.norm(vec_other, axis=1)[:, None]
 
+        # NOTE: array dim 0 is on up-down axis
+        
+        # rotate coordinates, to align x-axis with vec
+        ang = np.angle(vec[1] + vec[0]*1j)[0]
+        rot = np.array([[np.cos(ang), -np.sin(ang)], [+np.sin(ang), np.cos(ang)]])
+        vec_other = (rot @ vec_other.T).T
+
+        # calculate angles using complex numbers
+        angles = np.angle(vec_other[:, 1] + vec_other[:, 0] * 1j)
+        angles = np.rad2deg(angles)
+        angles[angles < 0] = 360 + angles[angles < 0] # adjust range to 0..360
+
+        # NOTE: return the segment labels 
+        labels = np.ceil(angles / (360 / self.segs))
+
+        return labels.reshape(self.Nx, self.Ny).astype(int)
+
+    def button_press_callback(self, event):
+        'whenever a mouse button is pressed'
+        print("event.button:", event.button)
+        if event.inaxes is None:
+            return
+
+        if event.button in [1,3]:  # any-click = place points
+
+            if event.button == 1:
+                self.srf = 0
+            if event.button == 3:
+                self.srf = 1
+
+            self.x[self.srf] = np.array([event.xdata])
+            self.y[self.srf] = np.array([event.ydata])
+
+            self.update()
+            return
+
+    def update(self):
+
+        # update existing points 
+        if self.points[self.srf] is not None:
+            self.points[self.srf].set_xdata(self.x[self.srf])
+            self.points[self.srf].set_ydata(self.y[self.srf])
+        
+        # plot points for first time
+        if self.points[self.srf] is None and self.x[self.srf].size > 0:
+            self.points[self.srf], = self.ax.plot(self.x[self.srf], self.y[self.srf], 'ow', lw=3)
+    
+        # FIXME: update curve - will need circle, and boundaries, representing the AHA model
+        # can only draw if both points are defined
+        if self.x[0].size > 0 and self.x[1].size > 0:
+
+            vec = np.array([self.x[1] - self.x[0], self.y[1] - self.y[0]])
+            radius = np.linalg.norm(vec)
+            
+            # rotation matrix
+            deg = np.deg2rad(int(360 / self.segs))
+            rot = np.array([[np.cos(deg), -np.sin(deg)], [+np.sin(deg), np.cos(deg)]])
+            ls = "--" # linestyle for separation of segment 1 and 2
+
+            # if plotting for the first time
+            if self.circle1 is None:
+                self.circle1 = plt.Circle((self.x[0], self.y[0]), radius, color="white", fill=False, clip_on=True, lw=3) # FIXME: are coordinates correct?
+                self.ax.add_patch(self.circle1)
+                #self.lines[0] = self.ax.plot((self.x[0], self.x[1]), (self.y[0], self.y[1]), color="white")
+
+                for idx in range(0, self.segs):
+                    if idx > 0:
+                        vec = rot @ vec
+                        ls = "-"
+                    self.lines[idx], = self.ax.plot((self.x[0], self.x[0] + vec[0]), (self.y[0], self.y[0] + vec[1]), color="white", lw=3, ls=ls)
+
+            else:
+                # FIXME: else update the currently plotted patch
+                self.circle1.set_radius(radius)
+                self.circle1.set_center((self.x[0], self.y[0]))
+                #self.ax.patches[0].set_radius(radius)
+                #self.ax.patches[0].set_center((self.x[0], self.y[0]))
+                for idx in range(0, self.segs):
+                    if idx > 0:
+                        vec = rot @ vec
+                        ls = "-"
+                    self.lines[idx].set_xdata((self.x[0], self.x[0] + vec[0]))
+                    self.lines[idx].set_ydata((self.y[0], self.y[0] + vec[1]))
+
+            self.ax.set_xlim(-0.5, self.Nx-0.5)
+            self.ax.set_ylim(self.Ny-0.5, -0.5)
+
+        # redraw canvas while idle
+        self.fig.canvas.draw_idle()
 

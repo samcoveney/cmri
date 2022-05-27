@@ -74,9 +74,9 @@ def main(args):
             bval_predict = args.predict
             # FIXME: supply at least one low b0 in order to remove warning
             gtab_new = gradient_table(np.full_like(bvals, bval_predict), bvecs, b0_threshold = bval_predict)
-            data_f = dti.prediction(dti_params, gtab_new, tenfit.S0_hat)
+            data_f = dti.tensor_prediction(dti_params, gtab_new, tenfit.S0_hat)
             data_f = data_f.mean(axis=-1)
-            save_nifti(flnm.new('predict_mean'), data_f, affine)
+            save_nifti(flnm.new('b' + str(bval_predict) + '_mean'), data_f, affine)
 
         # squeeze out the extra dimension out the front
         evecs, evals, S0 = tenfit.evecs, tenfit.evals, tenfit.S0_hat
@@ -96,7 +96,8 @@ def main(args):
 
         # FIXME: use get_colors()
         val, _ = load_nifti(flnm.new('md'))
-        selector = roi.select_point(val, 0.0, 2.5e-3)
+        val = [{"name": "md", "values": val}]
+        selector = roi.Select_point(val).run()
         x, y = selector.run()
         np.savetxt(flnm.new('LVcenter', "txt"), np.array([x, y]))
 

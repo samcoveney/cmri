@@ -48,17 +48,46 @@ def main(args):
         for idx in range(len(scalar_dict)):
             scalar_dict[idx]["values"] = scalar_dict[idx]["values"][x1:x2, y1:y2]
 
-    if args.tensors is None:
-        seg_mask = roi.segment(scalar_dict).run()
-    else:
-        seg_mask = roi.segment(scalar_dict, evecs, evals).run()
+    # FIXME: need to ensure the tensors are the correct orientation
+    if args.surf:
 
-    # accout for original mask 
-    if args.maskfile is not None:
-        seg_mask = np.pad(seg_mask, [(x1, mask.shape[0]-x2), (y1, mask.shape[1]-y2)])
+        # call segmentation GUI
+        if args.tensors is False:
+            seg_mask = roi.Segment_surfs(scalar_dict).run()
+        else:
+            seg_mask = roi.Segment_surfs(scalar_dict, evecs, evals).run()
 
-    # save mask
-    save_nifti(flnm.new("seg"), seg_mask.astype(int), affine)
+        # account for original mask (used to crop image before plotting)
+        if args.maskfile is not None:
+            seg_mask = np.pad(seg_mask, [(x1, mask.shape[0]-x2), (y1, mask.shape[1]-y2)])
+
+        # save mask
+        save_nifti(flnm.new("seg"), seg_mask.astype(int), affine)
+
+    if args.aha is not None:
+
+        seg = 6 if args.aha in ["base", "mid"] else 4
+
+        # call segmentation GUI
+        if args.tensors is False:
+            labels = roi.Segment_aha(scalar_dict).run(seg)
+        else:
+            labels = roi.Segment_aha(scalar_dict, evecs, evals).run(seg)
+    
+        # adjust labels
+        if args.aha == "base":
+            pass
+        if args.aha == "mid":
+            labels = labels + 6
+        if args.aha == "api":
+            labels = labels + 12
+
+        im = plt.imshow(labels.T, cmap="turbo")
+        plt.colorbar(im)
+        plt.show()
+
+        # save a label map
+        save_nifti(flnm.new("aha"), labels.astype(int), affine)
 
 
 if __name__ == "__main__":
@@ -71,36 +100,26 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--ext", type = str, required = False, default = "nii",
                         choices = ["nii", "nii.gz"], help = "Extension for saved files")
 
-    #parser.add_argument("-b", "--bfile", type = str, required = True,
-    #                    help = "Name of bval/bvec file, without extension")
-
-    parser.add_argument("-d", "--dim", type = int, required = False, default = 2,
-                        help = "Dimension to extract slices from (index from 0)")
-
-    parser.add_argument("-s", "--slice", type = int, required = False, default = 0,
-                        help = "Slice index (index from 0)")
-
-    #parser.add_argument("-c", "--color", required = True, default = False,
-    #                    choices = ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a'], help = "Plot some figures")
-
     parser.add_argument("-c", "--color", type = str, nargs = "+", required = True, default = None,
                         help = "List of colors, used to load --filename_\"color\".--ext for plotting")
-
-    #parser.add_argument("--eigen", required = False, type = str, default = None,
-    #                    help = "Base name of evecs and evals files")
 
     parser.add_argument("-t", "--tensors", required = False, default = False,
                         action = "store_true", help = "Plot using tensors")
 
+    parser.add_argument("--surf", required = False, default = False,
+                        action = "store_true", help = "Segment surfaces")
+
+    parser.add_argument("--aha", type = str, required = False, default = None,
+                        choices = ["base", "mid", "api"], help = "Segment AHA model")
+
     parser.add_argument("-m", "--maskfile", type = str, required = False,
                         default = None, help = "Use a mask when identifying outliers")
 
-    parser.add_argument("-g", "--gridplot", required = False, default = False,
-                        action = "store_true", help = "Simple plot of a few key quantities")
+    #parser.add_argument("--eigen", required = False, type = str, default = None,
+    #                    help = "Base name of evecs and evals files")
 
-    # NOTE: will put segementation into a different script later on
-    parser.add_argument("-seg", "--segment", required = False, default = False,
-                        action = "store_true", help = "Segmentation.")
+    #parser.add_argument("-seg", "--segment", required = False, default = False,
+    #                    action = "store_true", help = "Segmentation.")
 
     args = parser.parse_args()
 
