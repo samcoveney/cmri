@@ -80,6 +80,7 @@ def affine_registration_sitkimage(moving, static,
 
 
 def affine_registration(moving, static,
+                        moving_affine=None, static_affine=None,
                         pipeline=None,
                         moving_mask=None,
                         static_mask=None,
@@ -91,6 +92,8 @@ def affine_registration(moving, static,
     ----------
     moving : NumPy array
     static : NumPy array
+    moving_affine : NumPy array
+    static_affine : NumPy array
     pipeline : list, sequence of strings
     moving_mask : NumPy array (integer)
     static_mask : NumPy array (integer)
@@ -106,13 +109,25 @@ def affine_registration(moving, static,
     moving = sitk.GetImageFromArray(moving)
     static = sitk.GetImageFromArray(static)
 
+    # NOTE: using 3d spacing values even if images are 2d...
+    if moving_affine is not None:
+        moving_spacing = tuple(np.linalg.norm(moving_affine[0:3, 0:3], axis=0))
+        moving.SetSpacing(moving_spacing)
+    if static_affine is not None:
+        static_spacing = tuple(np.linalg.norm(static_affine[0:3, 0:3], axis=0))
+        static.SetSpacing(static_spacing)
+
     if moving_mask is not None:
         moving_mask = sitk.GetImageFromArray(moving_mask)
         moving_mask = sitk.Cast(moving_mask, sitk.sitkUInt8)
+        if moving_affine is not None:
+            moving_mask.SetSpacing(moving_spacing)
 
     if static_mask is not None:
         static_mask = sitk.GetImageFromArray(static_mask)
         static_mask = sitk.Cast(static_mask, sitk.sitkUInt8)
+        if static_affine is not None:
+            static_mask.SetSpacing(static_spacing)
     
     transformed, params = affine_registration_sitkimage(
         moving, static,

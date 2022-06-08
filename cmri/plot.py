@@ -65,7 +65,7 @@ def tensor_plot_2d(evecs, evals, scalars, color, ax=None):
     ax.add_collection(ec)
     ax.autoscale_view()
     ax.set_xlim(-0.5, evecs.shape[0]-0.5)
-    ax.set_ylim(-0.5, evecs.shape[1]-0.5)
+    ax.set_ylim(evecs.shape[1]-0.5, -0.5)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     cbar = plt.colorbar(ec)
