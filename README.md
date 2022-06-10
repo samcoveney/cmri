@@ -50,4 +50,6 @@ The following scripts should be available from the command line:
 * `cmri_reg_series` - register a series of 2D slices
 * `cmri_denoise` - denoise and identify outliers
 * `cmri_fit_tensors` - fit tensors and calculate related quantities
+* `cmri_plot` - view contents of NIfTI files
+* `cmri_segment` - segment surfaces and AHA model
 

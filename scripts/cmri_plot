@@ -49,18 +49,18 @@ def main(args):
     cturbo = utils.cyclic_turbo(deg=80)
 
     # 2d plot
-    if args.plot2d:
+    if args.plot == "2d":
 
         cmap, vmin, vmax = utils.get_colors(color)
 
         fig, ax = plt.subplots(1,1)
-        im = ax.imshow(scalars, cmap=cmap, vmin=vmin, vmax=vmax)
+        im = ax.imshow(scalars.T, cmap=cmap, vmin=vmin, vmax=vmax)
         plt.title(color)
         plt.colorbar(im)
         plt.show()
 
     # 3d plot
-    if args.plot3d or args.plot2dtensors:
+    if args.plot in ["2dt", "3d"]:
 
         print("Plotting tensors in 3D")
 
@@ -71,8 +71,23 @@ def main(args):
         # load tensor results
         evecs, _ = load_nifti(args.evecs)
         evals, _ = load_nifti(args.evals)
-        evals = np.expand_dims(evals, axis=2)
-        evecs = np.expand_dims(evecs, axis=2)
+
+        if evecs.ndim == 5: # assume that we have 3d data
+            # in case the slices are stored in a different dimension
+            if args.dim == 0:
+                evecs = evecs[slice_index, :, :, :, :]
+                evals = evals[slice_index, :, :, :]
+            if args.dim == 1:
+                evecs = evecs[:, slice_index, :, :, :]
+                evals = evals[:, slice_index, :, :]
+            if args.dim == 2:
+                evecs = evecs[:, :, slice_index, :, :]
+                evals = evals[:, :, slice_index, :]
+
+        if evals.ndim == 3:
+            evals = np.expand_dims(evals, axis=2)
+        if evecs.ndim == 4: # NOTE: this has been modified
+            evecs = np.expand_dims(evecs, axis=2)
 
         # load scalar
         if scalars.ndim == 2:
@@ -87,11 +102,11 @@ def main(args):
         if vmax == None: vmax = scalars.max()
 
         # 2D tensor plot
-        if args.plot2dtensors:
+        if args.plot == "2dt":
             tensor_plot_2d(evecs, evals, scalars, args.color)
 
         # 3d tensor plot
-        if args.plot3d:
+        if args.plot == "3d":
 
             RGB = cmap( (scalars - vmin) / (vmax - vmin) )[..., 0:3]
 
@@ -110,6 +125,7 @@ def main(args):
             axes = actor.axes(scale = (10, 10, 10))
             scene.add(axes)
 
+            scene.pitch(180)  # should work, but bug in Fury plotter
             window.show(scene)
 
 
@@ -130,16 +146,11 @@ if __name__ == "__main__":
                         help = "Slice index (index from 0)")
 
     parser.add_argument("-c", "--color", required = True, default = False,
-                        choices = ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a', 'mask'], help = "Plot some figures")
+                        choices = ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a', 'gray'],
+                        help = "What color scheme and color limits to use.")
 
-
-    # TODO: use single plot argument with allowable names
-    parser.add_argument("-p2", "--plot2d", required = False, default = False,
-                        action = "store_true", help = "Plot in 2d")
-    parser.add_argument("-pt", "--plot2dtensors", required = False, default = False,
-                        action = "store_true", help = "Plot tensors in 2d")
-    parser.add_argument("-p3", "--plot3d", required = False, default = False,
-                        action = "store_true", help = "Plot tensors in 3d")
+    parser.add_argument("-p", "--plot", required = True, default = False,
+                        choices = ['2d', '2dt', '3d'], help = "What type of plot.")
 
     parser.add_argument("--evecs", required = False, type = str,
                         help = "Name of the evecs file")
@@ -149,13 +160,6 @@ if __name__ == "__main__":
 
     parser.add_argument("-m", "--maskfile", type = str, required = False,
                         default = None, help = "Use a mask when identifying outliers")
-
-    parser.add_argument("-g", "--gridplot", required = False, default = False,
-                        action = "store_true", help = "Simple plot of a few key quantities")
-
-    # NOTE: will put segementation into a different script later on
-    parser.add_argument("-seg", "--segment", required = False, default = False,
-                        action = "store_true", help = "Segmentation.")
 
     args = parser.parse_args()
 

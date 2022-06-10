@@ -35,12 +35,24 @@ def main(args):
     bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
     gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
 
+    # how many unique (Bval, Bvec) do we have
+    consider_unique = False  
+    if consider_unique:
+        NUM = data.shape[-1]
+    else:
+        tmp = bvals[:, None] * bvecs
+        if False:
+            NUM = np.unique(tmp, axis = 0).shape[0] # counts opposite directions as unique
+        else:
+            tmp *= np.sign(tmp[:, [0]])
+            NUM = np.unique(tmp, axis = 0).shape[0] # counts opposite directions as equivalent
+
     # denoise with PCA
     if args.denoise:
-        
+
         # default patch size
         if args.radius is None:
-            root = np.ceil(data.shape[-1] ** (1./2))  # 2D
+            root = np.ceil(NUM ** (1./2))  # 2D
             root = root + 1 if (root % 2) == 0 else root  # make odd
             patch_radius = int((root - 1) / 2)  # suggested patch_radius
             print("Setting patch_radius to", patch_radius)
@@ -65,6 +77,7 @@ def main(args):
     
     # outlier detection
     if args.outliers:
+        # TODO: write separate function for MI calculation
 
         # fit tensor model
         tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)

@@ -96,7 +96,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Plot contents of NIfTI files.") 
 
     parser.add_argument("-f", "--filename", type = str, required = True,
-                        help = "Name of NIFTI file used for color")
+                        help = "Name of NIFTI file used to fit tensors (will be used to derive names based on --color argument)")
 
     parser.add_argument("-e", "--ext", type = str, required = False, default = "nii",
                         choices = ["nii", "nii.gz"], help = "Extension for saved files")

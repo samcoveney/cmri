@@ -43,7 +43,7 @@ def main(args):
         if args.maskfile is not None:
             mask, _ = load_nifti(args.maskfile)
         else:
-            mask = np.ones_like(data[..., 0])
+            mask = None #np.ones_like(data[..., 0])
 
         if args.outliers is not None:
             print("removing specified outliers")
@@ -104,6 +104,8 @@ def main(args):
 
     # calculate tensor angles
     if args.angles:
+
+        # FIXME: need to confirm that other angles are correct, now that HA is fixed
         
         # load diffusion tensors
         evecs, affine = load_nifti(flnm.new('evecs'))
@@ -122,6 +124,9 @@ def main(args):
         ls3 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 2])
         rs3 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, :, 2])
 
+        # for non-projected angles definitions HA, IA, AA, see the following paper
+        # Agger and Stephenson, "Assessing Myocardial Architecture: The Challenges and Controversies", 2020, doi: 10.3390/jcdd7040047.
+
         # non-projection method for calculating helix angle HA
         # ----------------------------------------------------
         HA = np.degrees(np.arcsin(np.abs(ls1)))
@@ -136,17 +141,9 @@ def main(args):
         IA[(ls1 < 0) & (rs1 > 0)] = -IA[(ls1 < 0) & (rs1 > 0)]
         save_nifti(flnm.new('ia'), IA, affine)
 
-        # non-projection method for calculating E2A 
-        # -----------------------------------------
-        E2A = np.degrees(np.arcsin(np.abs(rs2)))
-        E2A[(rs2 > 0) & (cs2 > 0)] = -E2A[(rs2 > 0) & (cs2 > 0)]
-        E2A[(rs2 < 0) & (cs2 < 0)] = -E2A[(rs2 < 0) & (cs2 < 0)]
-        save_nifti(flnm.new('e2a'), E2A, affine)
-
         # non-projection method for calculating aggregate angle AA (E3A)
         # --------------------------------------------------------------
         AA = np.degrees(np.arcsin(np.abs(rs3)))
-        # original, designed to set the sign
         AA[(ls3 > 0) & (rs3 < 0)] = -AA[(ls3 > 0) & (rs3 < 0)]
         AA[(ls3 < 0) & (rs3 > 0)] = -AA[(ls3 < 0) & (rs3 > 0)]
         save_nifti(flnm.new('aa'), AA, affine)
@@ -164,6 +161,9 @@ def main(args):
 
         # projection method for calculating transverse angle TA
         # -----------------------------------------------------
+        # method below is standard TA definition
+        # (differs from Ferreira et al., "Evaluation of the impact...", 2018, doi: 10.1002/mrm.26850.)
+        #
         # 1. project e1 into circ-rad (horizontal) plane
         e1_cr = evecs[..., 0] - ls1[..., None]*lon
         e1_cr = e1_cr / np.linalg.norm(e1_cr, axis=-1)[..., None]
@@ -175,6 +175,9 @@ def main(args):
 
         # projection method for calculating E2A
         # -------------------------------------
+        # Ferreira et al., "In vivo cardiovascular...", 2014, doi:10.1186/s12968-014-0087-8
+        # Ferreira et al., "Evaluation of the impact of strain...", 2018, doi: 10.1002/mrm.26850.
+        # 
         # 1. project e2 into crossmyo-rad plane (normal to e1_lc)
         e2_mr = np.einsum('ijk,ijk->ij', e1_lc, evecs[:, :, :, 1])
         e2_mr = evecs[..., 1] - e2_mr[..., None]*e1_lc
@@ -182,10 +185,10 @@ def main(args):
         # 2. angle with long-circ plane
         tmp = np.einsum('ijk,ijk->ij', rad, e2_mr)
         E2A_proj = np.degrees(np.arcsin(np.abs(tmp)))
-        # 3. rad and circ poing have opposite signs, make positive, else negative
+        # 3. rad and circ have opposite signs then make positive, else negative
         E2A_proj[(rs2 > 0) & (cs2 > 0)] = -E2A_proj[(rs2 > 0) & (cs2 > 0)]
         E2A_proj[(rs2 < 0) & (cs2 < 0)] = -E2A_proj[(rs2 < 0) & (cs2 < 0)]
-        save_nifti(flnm.new('e2ap'), E2A_proj, affine)
+        save_nifti(flnm.new('e2a'), E2A_proj, affine)
 
 
 if __name__ == "__main__":
