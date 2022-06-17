@@ -142,13 +142,14 @@ def affine_registration(moving, static,
     return transformed, params
 
 
-def affine_transform(image, params):
+def affine_transform(image, params, affine=None):
     """Apply transform to image.
 
     Parameters
     ----------
     image : NumPy array
     params : SimpleITK parameter map
+    affine : NumPy array
 
     Returns
     -------
@@ -157,6 +158,9 @@ def affine_transform(image, params):
     """
 
     image = sitk.GetImageFromArray(image)
+    if affine is not None:
+        image_spacing = tuple(np.linalg.norm(affine[0:3, 0:3], axis=0))
+        image.SetSpacing(image_spacing)
     transformed = sitk.Transformix(image, params)
     transformed = sitk.GetArrayFromImage(transformed)
 
