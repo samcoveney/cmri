@@ -53,7 +53,7 @@ def affine_registration_sitkimage(moving, static,
     # NOTE: should the settings below be applied for each pipeline item?
 
     # useless for our 2D slice data...
-    elastixImageFilter.SetParameter('UseDirectionCosines', 'false')
+    elastixImageFilter.SetParameter('UseDirectionCosines', 'true')
 
     # mask is region of interest
     elastixImageFilter.SetParameter('ErodeMask', 'false')
@@ -74,8 +74,8 @@ def affine_registration_sitkimage(moving, static,
     if not(verbose):
         elastixImageFilter.LogToConsoleOff()
 
-    import IPython
-    IPython.embed()
+    #import IPython
+    #IPython.embed()
 
     elastixImageFilter.Execute()
     resampled = elastixImageFilter.GetResultImage()
