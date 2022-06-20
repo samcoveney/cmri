@@ -12,7 +12,8 @@ def affine_registration_sitkimage(moving, static,
                         moving_mask=None,
                         static_mask=None,
                         verbose=False,
-                        iterations=None):
+                        iterations=None,
+                        com=False):
     """Register a moving image to a static image using SimpleElastix.
        All parameters must be SimpleITK images.
 
@@ -58,7 +59,11 @@ def affine_registration_sitkimage(moving, static,
     elastixImageFilter.SetParameter('ErodeMask', 'false')
 
     # do not align by geometrical centers
-    elastixImageFilter.SetParameter('AutomaticTransformInitialization', 'false')
+    if com == False:
+        elastixImageFilter.SetParameter('AutomaticTransformInitialization', 'false')
+    else:
+        elastixImageFilter.SetParameter('AutomaticTransformInitialization', 'true')
+        elastixImageFilter.SetParameter('AutomaticTransformInitializationMethod', 'CenterOfMass')
 
     elastixImageFilter.SetParameter('NumberOfResolutions', '3')
 
@@ -69,12 +74,12 @@ def affine_registration_sitkimage(moving, static,
     if not(verbose):
         elastixImageFilter.LogToConsoleOff()
 
+    import IPython
+    IPython.embed()
+
     elastixImageFilter.Execute()
     resampled = elastixImageFilter.GetResultImage()
     params = elastixImageFilter.GetTransformParameterMap()
-
-    #import IPython
-    #IPython.embed()
 
     return resampled, params
 
@@ -85,7 +90,8 @@ def affine_registration(moving, static,
                         moving_mask=None,
                         static_mask=None,
                         verbose=False,
-                        iterations=None):
+                        iterations=None,
+                        com=False):
     """Register a moving image to a static image using SimpleElastix.
 
     Parameters
@@ -135,7 +141,8 @@ def affine_registration(moving, static,
         moving_mask=moving_mask,
         static_mask=static_mask,
         verbose=verbose,
-        iterations=iterations)
+        iterations=iterations,
+        com=com)
 
     transformed = sitk.GetArrayFromImage(transformed)
 
