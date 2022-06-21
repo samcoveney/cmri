@@ -329,7 +329,7 @@ class Segment_aha(Multiplot):
 
         self.update()
 
-        plt.title("left-click: LV center, right-click: insertion point")
+        self.ax.set_title("left-click: LV center\nright-click: insertion point")
         plt.show()
 
         # calculate the segment labels 

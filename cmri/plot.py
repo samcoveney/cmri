@@ -13,6 +13,7 @@ from matplotlib.collections import EllipseCollection
 import matplotlib.lines as lines
 from matplotlib.widgets import Button
 from matplotlib.path import Path
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 import cmri.utils as utils
 
@@ -110,14 +111,25 @@ class Multiplot(object):
         self.fig = plt.figure()
         self.ax = self.fig.add_subplot()
 
-        self.fig.canvas.draw_idle()  # NOTE: perhaps pointless, draw happens in update
+        #from matplotlib.gridspec import GridSpec
+        #self.fig = plt.figure()
+        #gs = GridSpec(1, 1) #, width_ratios=[1, 2], height_ratios=[4, 1])
+        #self.ax = self.fig.add_subplot(gs[0])
+        #plt.tight_layout()
+
+        #self.fig.canvas.draw_idle()  # NOTE: perhaps pointless, draw happens in update
+
+        #plt.show()
+        #input("wait")
         
         if (self.evecs is not None) and (self.evals is not None): 
             self.ax, self.cbar = tensor_plot_2d(self.evecs, self.evals, self.scalars[self.cidx]["values"], self.scalars[self.cidx]["name"], self.ax)
         else:
             cmap, vmin, vmax = utils.get_colors(self.scalars[self.cidx]["name"])
             self.im = self.ax.imshow(self.scalars[self.cidx]["values"].T, cmap=cmap, vmin=vmin, vmax=vmax)
-            self.cbar = plt.colorbar(self.im, ax=self.ax)
+            divider = make_axes_locatable(self.ax)
+            cax = divider.append_axes('right', size='10%', pad=0.1)
+            self.cbar = plt.colorbar(self.im, cax) #=self.ax)
             self.cbar.set_label(self.scalars[self.cidx]["name"])
 
         self.cbar.set_label(self.scalars[self.cidx]["name"])
