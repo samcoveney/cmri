@@ -36,7 +36,7 @@ class Select_mask(Multiplot):
         self.ax.set_title("Click & drag, adjust, close window.")
         plt.show()
 
-        return self.mask
+        return self.mask, self.cidx  # where cidx is the index of viewed image (toggled with space bar)
 
     # selector callback method
     def onselect(self, eclick, erelease):

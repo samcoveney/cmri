@@ -2,6 +2,7 @@
 """Script for fitting tensors."""
 
 import argparse
+import sys
 import numpy as np
 import numbers
 import time
@@ -25,66 +26,76 @@ def main(args):
     # set filename
     flnm = utils.Filename(args.filename, args.bfile, args.ext)
 
+    # load data (could load with sitk and convert to NumPy)
+    data, affine = load_nifti(flnm.filename)
+    print("data shape:", data.shape)
+    print("affine matrix:", affine)
+    data = data.astype(np.float64)
+
+    # load bdata
+    bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
+    #gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
+    #print("bvecs:\n", bvecs)
+
+    # NOTE: this works, but might be preferable to define a square ROI based on the mask, and take subset of data
+    if args.maskfile is not None:
+        mask, _ = load_nifti(args.maskfile)
+    else:
+        mask = None #np.ones_like(data[..., 0])
+
+    if args.reorder is not None:
+        print("reordering/resigning bvec columns")
+
+        if len(args.reorder) != 9:
+            raise ValueError("--reorder (-r) must have 9 entries")
+
+        rot = np.array(args.reorder).reshape(3, 3)
+        bvecs = (rot.dot(bvecs.T)).T
+
+    if args.outliers is not None:
+        print("removing specified outliers")
+        good_img = np.loadtxt(args.outliers)
+    else:
+        good_img = np.ones(data.shape[-2:], dtype="int")
+
+
     # fit tensors
     if args.tensors:
 
-        # load data (could load with sitk and convert to NumPy)
-        data, affine, img = load_nifti(flnm.filename, return_img = True)
-        print("data shape:", data.shape)
-        print("affine matrix:", affine)
-        data = data.astype(np.float64)
+        # for saving results
+        evecs = np.zeros(data.shape[0:3] + (3,3))
+        evals = np.zeros(data.shape[0:3] + (3,))
+        S0 = np.zeros(data.shape[0:3])
 
-        # load bdata
-        bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
-        gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
-        print("bvecs:\n", bvecs)
+        # loop over slice
+        for sdx in range(data.shape[2]):
 
-        # NOTE: this works, but might be preferable to define a square ROI based on the mask, and take subset of data
-        if args.maskfile is not None:
-            mask, _ = load_nifti(args.maskfile)
-        else:
-            mask = None #np.ones_like(data[..., 0])
-
-        if args.outliers is not None:
-            print("removing specified outliers")
-            good_img, _ = load_nifti(args.outliers)
-            good_img = np.squeeze(np.argwhere(good_img))
-            data = data[:, :, good_img]
-            bvals = bvals[good_img]
-            bvecs = bvecs[good_img]
-
-        if args.reorder is not None:
-            print("reordering/resigning bvec columns")
-
-            if len(args.reorder) != 9:
-                raise ValueError("--reorder (-r) must have 9 entries")
-
-            rot = np.array(args.reorder).reshape(3, 3)
-            bvecs = (rot.dot(bvecs.T)).T
-            gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
-
-        # fit tensor model
-        tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
-        tenfit = tenmodel.fit(data, mask) 
-
-        if args.predict is not None:
+            gidx = np.squeeze(np.argwhere(good_img[sdx]))
+            gtab = gradient_table(bvals[gidx], bvecs[gidx, :], b0_threshold = bvals[gidx].min())
 
             # fit tensor model
-            dti_params = np.dstack([tenfit.evals, tenfit.evecs.reshape(tenfit.shape[0:2] + (-1,))])
-            bval_predict = args.predict
-            # FIXME: supply at least one low b0 in order to remove warning
-            gtab_new = gradient_table(np.full_like(bvals, bval_predict), bvecs, b0_threshold = bval_predict)
-            data_f = dti.tensor_prediction(dti_params, gtab_new, tenfit.S0_hat)
-            data_f = data_f.mean(axis=-1)
-            save_nifti(flnm.new('b' + str(bval_predict) + '_mean'), data_f, affine)
+            tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
+            tenfit = tenmodel.fit(data[:, :, [sdx], gidx], mask) 
+            evecs[:, :, sdx, :, :], evals[:, :, sdx, :], S0[:, :, sdx] = tenfit.evecs, tenfit.evals, tenfit.S0_hat
 
-        # squeeze out the extra dimension out the front
-        evecs, evals, S0 = tenfit.evecs, tenfit.evals, tenfit.S0_hat
+            # FIXME: maybe a better place for this code
+            if args.predict is not None:
+
+                # fit tensor model
+                dti_params = np.dstack([tenfit.evals, tenfit.evecs.reshape(tenfit.shape[0:2] + (-1,))])
+                bval_predict = args.predict
+                # FIXME: supply at least one low b0 in order to remove warning
+                gtab_new = gradient_table(np.full_like(bvals, bval_predict), bvecs, b0_threshold = bval_predict)
+                data_f = dti.tensor_prediction(dti_params, gtab_new, tenfit.S0_hat)
+                data_f = data_f.mean(axis=-1)
+                save_nifti(flnm.new('b' + str(bval_predict) + '_mean'), data_f, affine)
+
+        # save tensor fit
         save_nifti(flnm.new('evecs'), evecs, affine)
         save_nifti(flnm.new('evals'), evals, affine)
         save_nifti(flnm.new('s0'), S0, affine)
 
-        # several tensor metrics
+        # save FA and MD
         FA = fractional_anisotropy(evals)
         MD = mean_diffusivity(evals)
         save_nifti(flnm.new('fa'), FA, affine)
@@ -94,101 +105,130 @@ def main(args):
     # select LV center
     if args.lvcent:
 
-        # FIXME: use get_colors()
-        val, _ = load_nifti(flnm.new('md'))
-        val = [{"name": "md", "values": val}]
-        selector = roi.Select_point(val).run()
-        x, y = selector.run()
-        np.savetxt(flnm.new('LVcenter', "txt"), np.array([x, y]))
+        try:
+            val, _ = load_nifti(flnm.new('md'))
+            LVcent = [] 
+        except FileNotFoundError as e:
+            print("Calculate tensors before trying to select LV center")
+            sys.exit()
+
+        # loop over slice
+        for sdx in range(data.shape[2]):
+
+             scalar_dict = [{"name": "md", "values": val[:, :, sdx]}, {"name": "gray", "values": data[:, :, sdx, :].mean(axis=-1)}]
+             x, y = roi.Select_point(scalar_dict).run()
+             LVcent += [[x, y]]
+
+        np.savetxt(flnm.new('LVcenter', "txt"), np.array(LVcent))
 
 
     # calculate tensor angles
     if args.angles:
 
-        # FIXME: need to confirm that other angles are correct, now that HA is fixed
-        
         # load diffusion tensors
         evecs, affine = load_nifti(flnm.new('evecs'))
 
         # load LVcenter
         LVcent = np.loadtxt(flnm.new('LVcenter', "txt"))
-        rad, lon, cir = LV_coords(evecs.shape, LVcent)
-        
-        # determining directions of evecs wrt to LV coordinates
-        # -----------------------------------------------------
-        ls1 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 0])
-        cs1 = np.einsum('ijk,ijk->ij', cir, evecs[:, :, :, 0])
-        rs1 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, :, 0])
-        cs2 = np.einsum('ijk,ijk->ij', cir, evecs[:, :, :, 1])
-        rs2 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, :, 1])
-        ls3 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, :, 2])
-        rs3 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, :, 2])
 
-        # for non-projected angles definitions HA, IA, AA, see the following paper
-        # Agger and Stephenson, "Assessing Myocardial Architecture: The Challenges and Controversies", 2020, doi: 10.3390/jcdd7040047.
+        # for saving all slice results
+        HA_all = np.zeros(evecs.shape[0:3])
+        IA_all = np.zeros(evecs.shape[0:3])
+        AA_all = np.zeros(evecs.shape[0:3])
+        HA_proj_all = np.zeros(evecs.shape[0:3])
+        TA_all = np.zeros(evecs.shape[0:3])
+        E2A_proj_all = np.zeros(evecs.shape[0:3])
 
-        # non-projection method for calculating helix angle HA
-        # ----------------------------------------------------
-        HA = np.degrees(np.arcsin(np.abs(ls1)))
-        HA[(ls1 > 0) & (cs1 > 0)] = -HA[(ls1 > 0) & (cs1 > 0)]
-        HA[(ls1 < 0) & (cs1 < 0)] = -HA[(ls1 < 0) & (cs1 < 0)]
-        save_nifti(flnm.new('ha'), HA, affine)
+        # loop over slice
+        for sdx in range(data.shape[2]):
 
-        # non-projection method for calculating intrusion angle IA
-        # --------------------------------------------------------
-        IA = np.degrees(np.arcsin(np.abs(rs1)))
-        IA[(ls1 > 0) & (rs1 < 0)] = -IA[(ls1 > 0) & (rs1 < 0)]
-        IA[(ls1 < 0) & (rs1 > 0)] = -IA[(ls1 < 0) & (rs1 > 0)]
-        save_nifti(flnm.new('ia'), IA, affine)
+            # FIXME: slice specific
+            rad, lon, cir = LV_coords(evecs.shape[0:2], LVcent[sdx])
+            
+            # determining directions of evecs wrt to LV coordinates
+            # -----------------------------------------------------
+            ls1 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, sdx, :, 0])
+            cs1 = np.einsum('ijk,ijk->ij', cir, evecs[:, :, sdx, :, 0])
+            rs1 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, sdx, :, 0])
+            cs2 = np.einsum('ijk,ijk->ij', cir, evecs[:, :, sdx, :, 1])
+            rs2 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, sdx, :, 1])
+            ls3 = np.einsum('ijk,ijk->ij', lon, evecs[:, :, sdx, :, 2])
+            rs3 = np.einsum('ijk,ijk->ij', rad, evecs[:, :, sdx, :, 2])
 
-        # non-projection method for calculating aggregate angle AA (E3A)
-        # --------------------------------------------------------------
-        AA = np.degrees(np.arcsin(np.abs(rs3)))
-        AA[(ls3 > 0) & (rs3 < 0)] = -AA[(ls3 > 0) & (rs3 < 0)]
-        AA[(ls3 < 0) & (rs3 > 0)] = -AA[(ls3 < 0) & (rs3 > 0)]
-        save_nifti(flnm.new('aa'), AA, affine)
+            # for non-projected angles definitions HA, IA, AA, see the following paper
+            # Agger and Stephenson, "Assessing Myocardial Architecture: The Challenges and Controversies", 2020, doi: 10.3390/jcdd7040047.
 
-        # projection method for calculating helix angle HA
-        # ------------------------------------------------
-        # 1. project e1 into long-circ (tangential) plane
-        e1_lc = evecs[..., 0] - rs1[..., None]*rad
-        e1_lc = e1_lc / np.linalg.norm(e1_lc, axis=-1)[..., None]
-        # 2. angle with circ
-        tmp = np.abs(np.einsum('ijk,ijk->ij', e1_lc, cir))
-        HA_proj = np.degrees(np.arccos(tmp))
-        HA_proj *= np.sign(HA)
-        save_nifti(flnm.new('hap'), HA_proj, affine)
+            # non-projection method for calculating helix angle HA
+            # ----------------------------------------------------
+            HA = np.degrees(np.arcsin(np.abs(ls1)))
+            HA[(ls1 > 0) & (cs1 > 0)] = -HA[(ls1 > 0) & (cs1 > 0)]
+            HA[(ls1 < 0) & (cs1 < 0)] = -HA[(ls1 < 0) & (cs1 < 0)]
+            HA_all[:, :, sdx] = HA
 
-        # projection method for calculating transverse angle TA
-        # -----------------------------------------------------
-        # method below is standard TA definition
-        # (differs from Ferreira et al., "Evaluation of the impact...", 2018, doi: 10.1002/mrm.26850.)
-        #
-        # 1. project e1 into circ-rad (horizontal) plane
-        e1_cr = evecs[..., 0] - ls1[..., None]*lon
-        e1_cr = e1_cr / np.linalg.norm(e1_cr, axis=-1)[..., None]
-        # 2. angle with circ 
-        tmp = np.abs(np.einsum('ijk,ijk->ij', e1_cr, cir))
-        TA = np.degrees(np.arccos(tmp))
-        TA *= np.sign(IA)
-        save_nifti(flnm.new('ta'), TA, affine)
+            # non-projection method for calculating intrusion angle IA
+            # --------------------------------------------------------
+            IA = np.degrees(np.arcsin(np.abs(rs1)))
+            IA[(ls1 > 0) & (rs1 < 0)] = -IA[(ls1 > 0) & (rs1 < 0)]
+            IA[(ls1 < 0) & (rs1 > 0)] = -IA[(ls1 < 0) & (rs1 > 0)]
+            IA_all[:, :, sdx] = IA
 
-        # projection method for calculating E2A
-        # -------------------------------------
-        # Ferreira et al., "In vivo cardiovascular...", 2014, doi:10.1186/s12968-014-0087-8
-        # Ferreira et al., "Evaluation of the impact of strain...", 2018, doi: 10.1002/mrm.26850.
-        # 
-        # 1. project e2 into crossmyo-rad plane (normal to e1_lc)
-        e2_mr = np.einsum('ijk,ijk->ij', e1_lc, evecs[:, :, :, 1])
-        e2_mr = evecs[..., 1] - e2_mr[..., None]*e1_lc
-        e2_mr = e2_mr / np.linalg.norm(e2_mr, axis=-1)[..., None]
-        # 2. angle with long-circ plane
-        tmp = np.einsum('ijk,ijk->ij', rad, e2_mr)
-        E2A_proj = np.degrees(np.arcsin(np.abs(tmp)))
-        # 3. rad and circ have opposite signs then make positive, else negative
-        E2A_proj[(rs2 > 0) & (cs2 > 0)] = -E2A_proj[(rs2 > 0) & (cs2 > 0)]
-        E2A_proj[(rs2 < 0) & (cs2 < 0)] = -E2A_proj[(rs2 < 0) & (cs2 < 0)]
-        save_nifti(flnm.new('e2a'), E2A_proj, affine)
+            # non-projection method for calculating aggregate angle AA (E3A)
+            # --------------------------------------------------------------
+            AA = np.degrees(np.arcsin(np.abs(rs3)))
+            AA[(ls3 > 0) & (rs3 < 0)] = -AA[(ls3 > 0) & (rs3 < 0)]
+            AA[(ls3 < 0) & (rs3 > 0)] = -AA[(ls3 < 0) & (rs3 > 0)]
+            AA_all[:, :, sdx] = AA
+
+            # projection method for calculating helix angle HA
+            # ------------------------------------------------
+            # 1. project e1 into long-circ (tangential) plane
+            e1_lc = evecs[:, :, sdx, :, 0] - rs1[..., None]*rad
+            e1_lc = e1_lc / np.linalg.norm(e1_lc, axis=-1)[..., None]
+            # 2. angle with circ
+            tmp = np.abs(np.einsum('ijk,ijk->ij', e1_lc, cir))
+            HA_proj = np.degrees(np.arccos(tmp))
+            HA_proj *= np.sign(HA)
+            HA_proj_all[:, :, sdx] = HA_proj
+
+            # projection method for calculating transverse angle TA
+            # -----------------------------------------------------
+            # method below is standard TA definition
+            # (differs from Ferreira et al., "Evaluation of the impact...", 2018, doi: 10.1002/mrm.26850.)
+            #
+            # 1. project e1 into circ-rad (horizontal) plane
+            e1_cr = evecs[:, :, sdx, :, 0] - ls1[..., None]*lon
+            e1_cr = e1_cr / np.linalg.norm(e1_cr, axis=-1)[..., None]
+            # 2. angle with circ 
+            tmp = np.abs(np.einsum('ijk,ijk->ij', e1_cr, cir))
+            TA = np.degrees(np.arccos(tmp))
+            TA *= np.sign(IA)
+            TA_all[:, :, sdx] = TA
+
+            # projection method for calculating E2A
+            # -------------------------------------
+            # Ferreira et al., "In vivo cardiovascular...", 2014, doi:10.1186/s12968-014-0087-8
+            # Ferreira et al., "Evaluation of the impact of strain...", 2018, doi: 10.1002/mrm.26850.
+            # 
+            # 1. project e2 into crossmyo-rad plane (normal to e1_lc)
+            e2_mr = np.einsum('ijk,ijk->ij', e1_lc, evecs[:, :, sdx, :, 1])
+            e2_mr = evecs[:, :, sdx, :, 1] - e2_mr[..., None]*e1_lc
+            e2_mr = e2_mr / np.linalg.norm(e2_mr, axis=-1)[..., None]
+            # 2. angle with long-circ plane
+            tmp = np.einsum('ijk,ijk->ij', rad, e2_mr)
+            E2A_proj = np.degrees(np.arcsin(np.abs(tmp)))
+            # 3. rad and circ have opposite signs then make positive, else negative
+            E2A_proj[(rs2 > 0) & (cs2 > 0)] = -E2A_proj[(rs2 > 0) & (cs2 > 0)]
+            E2A_proj[(rs2 < 0) & (cs2 < 0)] = -E2A_proj[(rs2 < 0) & (cs2 < 0)]
+            E2A_proj_all[:, :, sdx] = E2A_proj
+
+
+        # save results
+        save_nifti(flnm.new('ha'), HA_all, affine)
+        save_nifti(flnm.new('ia'), IA_all, affine)
+        save_nifti(flnm.new('aa'), AA_all, affine)
+        save_nifti(flnm.new('hap'), HA_proj_all, affine)
+        save_nifti(flnm.new('ta'), TA_all, affine)
+        save_nifti(flnm.new('e2a'), E2A_proj_all, affine)
 
 
 if __name__ == "__main__":
@@ -211,7 +251,7 @@ if __name__ == "__main__":
                         action = "store_true", help = "Fit tensors and calculate tensor metrics")
 
     parser.add_argument("--predict", type = int, required = False, default = None,
-                        help = "Predict average signal for bval specifief here")
+                        help = "Predict average signal for bval specified here")
 
     parser.add_argument("-o", "--outliers", type = str, required = False,
                         default = None, help = "Specify file that indicates good images for fitting")

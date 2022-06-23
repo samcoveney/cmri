@@ -18,38 +18,83 @@ def main(args):
     # set filename
     flnm = utils.Filename(args.filename, args.bfile, args.ext)
 
-    # set slice
-    slice_index = args.slice
-
     # load data (could load with sitk and convert to NumPy)
     data, affine, img = load_nifti(flnm.filename, return_img = True)
     print("data shape:", data.shape)
     print("affine matrix:", affine)
-    data = data[:, :, slice_index, :].astype(np.float64)
+
+    # set slice - either register all slices or just 1 slice
+    if args.slice is not None:
+        slice_list = [args.slice]
+    else:
+        slice_list = [sdx for sdx in range(data.shape[2])]
 
     # load bdata
     bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
     gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
 
-    # create a mask
+    # create a mask (and select reference image)
     if args.mask:
 
-        tmp = data[:, :, gtab.b0s_mask][..., args.b0ref]
-        tmp = [{"name": "gray", "values": tmp}]
-        mask = Select_mask(tmp).run()
-        save_nifti(flnm.new("mask_" + str(slice_index)), mask, affine)
+        # array for storing results
+        masks = np.zeros([data.shape[0], data.shape[1], len(slice_list)], dtype=int)
+        b0refs = np.zeros(len(slice_list), dtype=int)
+
+        # loop over slices
+        for sdx, slice_index in enumerate(slice_list):
+            data_slice = data[:, :, slice_index, :].astype(np.float64)
+
+            # use space bar to toggle image that will be used as reference
+            tmp = [{"values": data_slice[:, :, gtab.b0s_mask][..., bdx], "name": "gray"} for bdx in range(gtab.b0s_mask.sum())]
+            masks[:, :, sdx], b0refs[sdx] = Select_mask(tmp).run()
+
+        # save masks
+        if len(slice_list) < data.shape[2]:
+            save_nifti(flnm.new("regmask_" + str(slice_index)), masks, affine)
+            np.savetxt(flnm.new("fixedimage_"+ str(slice_index), "txt"), b0refs, fmt='%d')
+        else:
+            save_nifti(flnm.new("regmask"), masks, affine)
+            np.savetxt(flnm.new("fixedimage", "txt"), b0refs, fmt='%d')
+
 
     # perform registration
     if args.reg:
 
-        mask, _ = load_nifti(flnm.new("mask_" + str(slice_index)))
+        # array for storing results
+        reg_data = np.zeros([data.shape[0], data.shape[1], len(slice_list), data.shape[3]])
 
-        reg_data = register_dwi_series(data, gtab=gtab, b0_ref=args.b0ref,\
-                                       denoise=True, static_mask=mask,\
-                                       verbose=args.verbose,\
-                                       iterations=args.iter)
+        # load masks
+        if len(slice_list) == data.shape[2]:
+            masks, _ = load_nifti(flnm.new("regmask"))
+            b0refs = np.loadtxt(flnm.new("fixedimage", "txt")).astype(int)
+        else:
+            masks = np.zeros(data.shape[0:3], dtype=int)
+            b0refs = np.zeros(len(slice_list), dtype=int)
+            for sdx, slice_index in enumerate(slice_list):
+                masks[:, :, sdx], _ = load_nifti(flnm.new("regmask_" + str(slice_index)))
+                b0refs[sdx] = np.loadtxt(flnm.new("fixedimage_"+ str(slice_index), "txt"))
 
-        save_nifti(flnm.new("reg_" + str(slice_index)), reg_data, affine)
+        pipeline = ["rigid", "affine"] if args.type == "affine" else ["rigid"]
+
+        # loop over slices
+        for sdx, slice_index in enumerate(slice_list):
+            print("\nslice:", slice_index)
+            data_slice = data[:, :, slice_index, :].astype(np.float64)
+            mask = masks[:, :, sdx]
+            b0ref = int(b0refs[sdx])
+
+            # FIXME: need option for pipeline=['rigid', 'affine']
+            reg_data[:, :, sdx, :] = register_dwi_series(data_slice, gtab=gtab, b0_ref=b0ref,\
+                                           denoise=True, static_mask=mask,\
+                                           pipeline=pipeline,\
+                                           verbose=args.verbose,\
+                                           iterations=args.iter)
+
+        # save registered images 
+        if len(slice_list) < data.shape[2]:
+            save_nifti(flnm.new("reg_" + str(slice_index)), reg_data, affine)
+        else:
+            save_nifti(flnm.new("reg"), reg_data, affine)
 
 
 if __name__ == "__main__":
@@ -65,14 +110,14 @@ if __name__ == "__main__":
     parser.add_argument("-b", "--bfile", type = str, required = True,
                         help = "Name of bval/bvec file, without extension")
 
-    parser.add_argument("-s", "--slice", type = int, required = True,
-                        help = "Slice index")
-
-    parser.add_argument("--b0ref", type = int, required = False, default = 0,
-                        help = "index of b0 images to use as reference image")
+    parser.add_argument("-s", "--slice", type = int, required = False, default = None,
+                        help = "Slice index, need only if desiring to register (or mask) one slice")
 
     parser.add_argument("-r", "--reg", required = False, default = False,
                         action = "store_true", help = "Registration")
+
+    parser.add_argument("-t", "--type", required = False, default = "rigid",
+                        choices = ["rigid", "affine"], help = "What registration to use (\"affine\" choice first uses \"rigid\".")
 
     parser.add_argument("-m", "--mask", required = False, default = False,
                         action = "store_true", help = "Define a mask for current slice")

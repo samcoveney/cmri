@@ -250,25 +250,32 @@ class Select_outliers:
         self.update_plots()
 
     def update_plots(self):
+        # good plots (below threshold)
         im_good = self.data[:, :, self.midx[self.MIS < self.XorY]][..., -1]
         im_good_f = self.data_f[:, :, self.midx[self.MIS < self.XorY]][..., -1]
         vming = np.min([im_good.min(), im_good_f.min()])
         vmaxg = np.max([im_good.max(), im_good_f.max()])
-        im_bad = self.data[:, :, self.midx[self.MIS > self.XorY]][..., 0]
-        im_bad_f = self.data_f[:, :, self.midx[self.MIS > self.XorY]][..., 0]
-        vminb = np.min([im_bad.min(), im_bad_f.min()])
-        vmaxb = np.max([im_bad.max(), im_bad_f.max()])
         self.axg.imshow(im_good.T, cmap="turbo", vmin=vming, vmax=vmaxg)
         self.axg_f.imshow(im_good_f.T, cmap="turbo", vmin=vming, vmax=vmaxg)
-        self.axb.imshow(im_bad.T, cmap="turbo", vmin=vminb, vmax=vmaxb)
-        self.axb_f.imshow(im_bad_f.T, cmap="turbo", vmin=vminb, vmax=vmaxb)
+
+        # bad plots (above threshold)
+        try:
+            im_bad = self.data[:, :, self.midx[self.MIS > self.XorY]][..., 0]
+            im_bad_f = self.data_f[:, :, self.midx[self.MIS > self.XorY]][..., 0]
+            vminb = np.min([im_bad.min(), im_bad_f.min()])
+            vmaxb = np.max([im_bad.max(), im_bad_f.max()])
+            self.axb.imshow(im_bad.T, cmap="turbo", vmin=vminb, vmax=vmaxb)
+            self.axb_f.imshow(im_bad_f.T, cmap="turbo", vmin=vminb, vmax=vmaxb)
+        except IndexError as e:
+            self.axb.imshow(np.zeros_like(im_good.T), cmap="turbo")
+            self.axb_f.imshow(np.zeros_like(im_good.T), cmap="turbo")
 
         self.c.draw_idle()
 
     def run(self):
         plt.show()
 
-        good_img = np.ones(self.data.shape[-1])
+        good_img = np.ones(self.data.shape[-1], dtype=int)
         bad = self.midx[self.MIS > self.XorY]
         good_img[bad] = 0
 

@@ -254,6 +254,8 @@ def register_series(series, ref, pipeline=None, denoise=True, static_mask=None, 
             time_per_run = time_per_run + (time.time() - start_time - time_per_run) / (ii + 1) 
             time_left = time.strftime('%H:%M:%S', time.gmtime((num_acq - ii - 1)*time_per_run))
 
+    utils.progress_bar(num_acq, num_acq, prefix = '', suffix = ' ' + time_left, decimals = 0, length = 20, fill = '#')
+
     return xformed
 
 

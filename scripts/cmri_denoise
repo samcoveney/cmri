@@ -31,6 +31,10 @@ def main(args):
     data, affine, img = load_nifti(flnm.filename, return_img = True)
     data = data.astype(np.float64)
 
+    # ensure correct dimensions
+    if data.ndim == 3:
+        data = np.expand_dims(data, 2)
+
     # load bdata
     bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
     gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
@@ -59,76 +63,107 @@ def main(args):
         else:
             patch_radius = args.radius
 
-        # use 3D data, but slice dimension has size 1
-        tmp = np.expand_dims(data, 2)
+        # load mask file
+        if args.maskfile is not None:
+            print("Denoising for mask ROI only")
+            mask, _ = load_nifti(args.maskfile)
 
-        # estimate noise
-        sigma = pca_noise_estimate(tmp, gtab, patch_radius=patch_radius,
-                                     correct_bias=True, smooth=3)
-        save_nifti(flnm.new("sigma_pr_" + str(patch_radius)),
-                   sigma, affine)
+        # array for storing results
+        data_denoised = data.copy()
+        sigma = np.zeros(data.shape[0:3])
 
-        # denoise array
-        data_denoised = localpca(tmp, sigma, tau_factor=2.3,
-                                  patch_radius=patch_radius, suppress_warning=False)
-        data_denoised = np.squeeze(data_denoised)
-        save_nifti(flnm.new("denoised_pr_" + str(patch_radius)),
-                   data_denoised, affine)
-    
+        # loop over slices
+        for sdx in range(data.shape[2]):
+            print("\nslice:", sdx)
+
+            # crop the images before denoising, to save time
+            if args.maskfile is not None:
+                x1, x2, y1, y2 = roi.square_from_mask(mask[:, :, sdx], return_indices=True)
+                x1 = x1 - 2*patch_radius if x1 - 2*patch_radius > 0 else 0
+                x2 = x2 + 2*patch_radius if x2 + 2*patch_radius <= data.shape[0] else data.shape[0]
+                y1 = y1 - 2*patch_radius if y1 - 2*patch_radius > 0 else 0
+                y2 = y2 + 2*patch_radius if y2 + 2*patch_radius <= data.shape[1] else data.shape[1]
+            else:
+                x1, x2, y1, y2 = 0, data.shape[0], 0, data.shape[1]
+
+            # estimate noise
+            sigma[x1:x2, y1:y2, [sdx]] = pca_noise_estimate(data[x1:x2, y1:y2, [sdx], :], gtab, patch_radius=patch_radius,
+                                         correct_bias=True, smooth=3)
+
+            # denoise array
+            data_denoised[x1:x2, y1:y2, [sdx], :] = localpca(data[x1:x2, y1:y2, [sdx], :], sigma[x1:x2, y1:y2, [sdx]], tau_factor=2.3,
+                                      patch_radius=patch_radius, suppress_warning=True)
+
+        # save noise
+        save_nifti(flnm.new("noise"), sigma, affine)
+
+        # save denoised
+        save_nifti(flnm.new("denoised"), data_denoised, affine)
+
+
     # outlier detection
     if args.outliers:
         # TODO: write separate function for MI calculation
 
         # fit tensor model
-        tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
-        tenfit = tenmodel.fit(data)
-        dti_params = np.dstack([tenfit.evals, tenfit.evecs.reshape(tenfit.shape[0:2] + (-1,))])  # NOTE: (given the reshaping in dti.tensor_prediction, this seems right)
-        data_f = dti.tensor_prediction(dti_params, gtab, tenfit.S0_hat)
+        # for storing if images a good
+        good_img = np.zeros(data.shape[-2:], dtype=int)
 
         # load mask
         if args.maskfile is not None:
             mask, _ = load_nifti(args.maskfile)
         else:
             mask = np.ones_like(data[..., 0])
-        static_mask = sitk.GetImageFromArray(mask)
-        static_mask = sitk.Cast(static_mask, sitk.sitkUInt8)
 
-        # calculate MI between data and data_f
-        MI = np.zeros(data.shape[-1]) 
-        for idx in range(data.shape[-1]):
-            y = sitk.GetImageFromArray(data[..., idx])
-            f = sitk.GetImageFromArray(data_f[..., idx])
+        # loop over slices
+        for sdx in range(data.shape[2]):
+            print("\nslice:", sdx)
 
-            reg_meth = sitk.ImageRegistrationMethod()
+            # fit slice-by-slice
+            tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
+            tenfit = tenmodel.fit(data[:, :, sdx])
+            dti_params = np.dstack([tenfit.evals, tenfit.evecs.reshape(tenfit.shape[0:2] + (-1,))])  # NOTE: (given the reshaping in dti.tensor_prediction, this seems right)
+            data_f = dti.tensor_prediction(dti_params, gtab, tenfit.S0_hat)
 
-            # NOTE: I need to communicate a 2D transform, without doing any transforming
-            initial_transform = sitk.CenteredTransformInitializer(
-                y, f, sitk.Euler2DTransform(),
-                sitk.CenteredTransformInitializerFilter.GEOMETRY
-            )
-            reg_meth.SetInitialTransform(initial_transform) 
+            # mask to sitk image
+            static_mask = sitk.GetImageFromArray(mask[:, :, sdx])
+            static_mask = sitk.Cast(static_mask, sitk.sitkUInt8)
 
-            # NOTE: I should only need one mask in theory
-            reg_meth.SetMetricFixedMask(static_mask)
-            reg_meth.SetMetricMovingMask(static_mask)
+            # calculate MI between data and data_f
+            MI = np.zeros(data.shape[-1]) 
+            for idx in range(data.shape[-1]):
+                y = sitk.GetImageFromArray(data[:, :, sdx, idx])
+                f = sitk.GetImageFromArray(data_f[:, :, idx])
 
-            reg_meth.SetMetricAsMattesMutualInformation()
-            reg_meth.SetMetricSamplingStrategy(reg_meth.NONE)
-            reg_meth.SetMetricSamplingPercentage(1.0)
-            res = reg_meth.MetricEvaluate(y, f)
+                reg_meth = sitk.ImageRegistrationMethod()
 
-            MI[idx] = res
+                # NOTE: I need to communicate a 2D transform, without doing any transforming
+                initial_transform = sitk.CenteredTransformInitializer(
+                    y, f, sitk.Euler2DTransform(),
+                    sitk.CenteredTransformInitializerFilter.GEOMETRY
+                )
+                reg_meth.SetInitialTransform(initial_transform) 
 
-        # crop the images before the quality control GUI
-        if args.maskfile is not None:
-            x1, x2, y1, y2 = roi.square_from_mask(mask, return_indices=True)
-            data = data[x1:x2, y1:y2]
-            data_f = data_f[x1:x2, y1:y2]
-    
-        # GUI to select threshold
-        good_img = Select_outliers(data, data_f, MI, bvals).run()
-        print("good_img:", good_img)
-        save_nifti(flnm.new("outliers"), good_img, affine)
+                # NOTE: I should only need one mask in theory
+                reg_meth.SetMetricFixedMask(static_mask)
+                reg_meth.SetMetricMovingMask(static_mask)
+
+                reg_meth.SetMetricAsMattesMutualInformation()
+                reg_meth.SetMetricSamplingStrategy(reg_meth.NONE)
+                reg_meth.SetMetricSamplingPercentage(1.0)
+                res = reg_meth.MetricEvaluate(y, f)
+
+                MI[idx] = res
+
+            # crop the images before the quality control GUI
+            if args.maskfile is not None:
+                x1, x2, y1, y2 = roi.square_from_mask(mask[:, :, sdx], return_indices=True)
+        
+            # GUI to select threshold
+            good_img[sdx, :] = Select_outliers(data[x1:x2, y1:y2, sdx], data_f[x1:x2, y1:y2], MI, bvals).run()
+
+        # save 1d 'mask' (along acquisition dimension) of good images
+        np.savetxt(flnm.new("outliers", "txt"), good_img, fmt='%d')
 
 
 if __name__ == "__main__":
