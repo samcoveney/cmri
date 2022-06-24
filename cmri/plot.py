@@ -69,7 +69,10 @@ def tensor_plot_2d(evecs, evals, scalars, color, ax=None):
     ax.set_ylim(evecs.shape[1]-0.5, -0.5)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
-    cbar = plt.colorbar(ec)
+    #cbar = plt.colorbar(ec)
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes('right', size='10%', pad=0.1)
+    cbar = plt.colorbar(ec, cax) #=self.ax)
     cbar.set_label('scalars')
     ax.set_aspect('equal')
 
@@ -167,18 +170,19 @@ class Multiplot(object):
        
             self.fig.canvas.draw_idle()
             
-        if event.key in ["left", "right", "down", "up"]:
+        #if event.key in ["left", "right", "down", "up"]:
+        if event.key in ["end", "pagedown", "down", "begin"]:
             vmin = self.scalars[self.cidx]["vmin"]
             vmax = self.scalars[self.cidx]["vmax"]
             vdif = self.scalars[self.cidx]["vdif"]
             factor = 0.05
-            if event.key == "left":
+            if event.key == "end":
                 vmin = vmin - factor*vdif
-            if event.key == "right":
+            if event.key == "pagedown":
                 vmin = vmin + factor*vdif
             if event.key == "down":
                 vmax = vmax - factor*vdif
-            if event.key == "up":
+            if event.key == "begin":
                 vmax = vmax + factor*vdif
 
             if vmax > vmin:
@@ -191,6 +195,11 @@ class Multiplot(object):
                 self.im.set_clim(vmin, vmax)
 
             self.fig.canvas.draw_idle()
+
+        if event.key in ["enter"]:
+            print("trying to redraw")
+            self.fig.canvas.draw_idle()
+            
 
     def run(self):
         """Just plotting"""

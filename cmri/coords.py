@@ -3,16 +3,19 @@
 import numpy as np
 
 
-def LV_coords(image_shape, LVcent):
+def LV_coords(image_shape, LVcent, rad=None):
     """Uses LV center to define simple coordinate system."""
 
     [Y, X] = np.meshgrid(range(image_shape[1]), range(image_shape[0]))
 
     # radial direction
-    rad = np.zeros([image_shape[0], image_shape[1], 3])
-    rad[:, :, 0] = X - LVcent[0]
-    rad[:, :, 1] = Y - LVcent[1]
-    rad[:, :, 2] = 0.0
+    if rad is None:
+        rad = np.zeros([image_shape[0], image_shape[1], 3])
+        rad[:, :, 0] = X - LVcent[0]
+        rad[:, :, 1] = Y - LVcent[1]
+        rad[:, :, 2] = 0.0
+
+    # normalize
     rad = rad / np.linalg.norm(rad, axis=-1)[..., None]
 
     lon = np.zeros_like(rad)

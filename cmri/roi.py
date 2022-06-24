@@ -108,7 +108,7 @@ class Segment_surfs(Multiplot):
     def __init__(self, scalars, evecs=None, evals=None):
         super().__init__(scalars, evecs, evals)
 
-    def run(self):
+    def run(self, surfs=None):
         """Things specific to setting up and running this class."""
 
         # add callbacks
@@ -123,22 +123,28 @@ class Segment_surfs(Multiplot):
         self.ls = "-w" # curve style
 
         # for storing surface coordinates
-        self.x, self.y = [None, None], [None, None]
-        for srf in [0, 1]:
-            self.x[srf] = np.array([], dtype=float)
-            self.y[srf] = np.array([], dtype=float)
+        if surfs is None:
+            self.x, self.y = [None, None], [None, None]
+            for srf in [0, 1]:
+                self.x[srf] = np.array([], dtype=float)
+                self.y[srf] = np.array([], dtype=float)
+        else:
+            [self.x, self.y] = surfs
 
-        # NOTE: will need two masks
+        # set masks
         self.mask = [None, None]
         self.mask[0] = np.ones((self.Nx, self.Ny), dtype=bool)
         self.mask[1] = np.ones((self.Nx, self.Ny), dtype=bool)
+
+        # update the plots
+        self.update()
         self.switch_surface()
         self.update()
 
         plt.show()
 
         # return the mask
-        return self.mask[0] * ~self.mask[1]
+        return self.mask[0] * ~self.mask[1], [self.x, self.y]
 
     def button_press_callback(self, event):
         'whenever a mouse button is pressed'
@@ -205,7 +211,7 @@ class Segment_surfs(Multiplot):
             X = np.r_[self.x[self.srf], self.x[self.srf][0]]
             Y = np.r_[self.y[self.srf], self.y[self.srf][0]]
             tck, u = interpolate.splprep([X, Y], s=0, per=True, k=k)
-            xi, yi = interpolate.splev(np.linspace(0, 1, 1000), tck)
+            xi, yi = interpolate.splev(np.linspace(0, 1, 100), tck)
 
             # snap curves to nearest pixels
             if False:
@@ -229,15 +235,15 @@ class Segment_surfs(Multiplot):
             self.mask[self.srf][:, :] = poly_path.contains_points(self.coors).reshape(self.Nx, self.Ny)
 
             mask_total = self.mask[0] * ~self.mask[1]
-            alpha = (mask_total + 0.3) / (1.3) 
+            alpha = (mask_total + 0.8) / (1.8) 
 
             if (self.evecs is not None) and (self.evals is not None): 
                 self.ax.collections[0].set_alpha(alpha)
             else:
                 self.im.set_alpha(alpha.T)
 
-        self.ax.set_xlim(-0.5, self.Nx-0.5)
-        self.ax.set_ylim(self.Ny-0.5, -0.5)
+        #self.ax.set_xlim(-0.5, self.Nx-0.5)
+        #self.ax.set_ylim(self.Ny-0.5, -0.5)
 
         # redraw canvas while idle
         self.fig.canvas.draw_idle()
@@ -306,7 +312,7 @@ class Segment_aha(Multiplot):
     def __init__(self, scalars, evecs=None, evals=None):
         super().__init__(scalars, evecs, evals)
 
-    def run(self, segs):
+    def run(self, segs, points=None):
         """Things specific to setting up and running this class."""
 
         # add callbacks
@@ -315,10 +321,14 @@ class Segment_aha(Multiplot):
         self.segs = segs  # number of segments
         self.srf = 0  #  0: LVcent, 1: insertion point
         # NOTE: probably would be better as array(s), one for LVcent, one for insertion
-        self.x, self.y = [None, None], [None, None]
-        for srf in [0, 1]:
-            self.x[srf] = np.array([], dtype=float)
-            self.y[srf] = np.array([], dtype=float)
+        if points is None:
+            self.x, self.y = [None, None], [None, None]
+            for srf in [0, 1]:
+                self.x[srf] = np.array([], dtype=float)
+                self.y[srf] = np.array([], dtype=float)
+        else:
+            print(points)
+            [self.x, self.y] = points
 
         self.epsilon = 10
         # NOTE: will need two of these, one per surface, store as list
@@ -354,7 +364,7 @@ class Segment_aha(Multiplot):
         labels = np.ceil(angles / (360 / self.segs)) + 1
         labels[labels > self.segs] = 1
 
-        return labels.reshape(self.Nx, self.Ny).astype(int)
+        return labels.reshape(self.Nx, self.Ny).astype(int), [self.x, self.y]
 
     def button_press_callback(self, event):
         'whenever a mouse button is pressed'
@@ -423,8 +433,8 @@ class Segment_aha(Multiplot):
                     self.lines[idx].set_xdata((self.x[0], self.x[0] + vec[0]))
                     self.lines[idx].set_ydata((self.y[0], self.y[0] + vec[1]))
 
-            self.ax.set_xlim(-0.5, self.Nx-0.5)
-            self.ax.set_ylim(self.Ny-0.5, -0.5)
+            #self.ax.set_xlim(-0.5, self.Nx-0.5)
+            #self.ax.set_ylim(self.Ny-0.5, -0.5)
 
         # redraw canvas while idle
         self.fig.canvas.draw_idle()

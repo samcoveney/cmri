@@ -1,13 +1,17 @@
 #!python
 """For segmenting."""
 
+import sys
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from scipy import interpolate
 
 import cmri.utils as utils
 import cmri.roi as roi
+from cmri.coords import LV_coords
 
 from dipy.io.image import load_nifti, save_nifti
 from dipy.io import read_bvals_bvecs
@@ -22,12 +26,17 @@ def main(args):
     # set filename
     flnm = utils.Filename(args.filename, "", args.ext)
 
+    # TODO: slice index
+    sdx = 0
+
     # load tensor results
-    if args.tensors is not None:
+    if args.tensors:
         evecs, _ = load_nifti(flnm.new("evecs"))
         evals, _ = load_nifti(flnm.new("evals"))
-        evals = np.expand_dims(evals, axis=2)
-        evecs = np.expand_dims(evecs, axis=2)
+        evals = evals[:, :, [sdx], :]
+        evecs = evecs[:, :, [sdx], :, :]
+    else:
+        evals, evecs = None, None
 
     # setup list of dictionaries for colors
     #['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a']
@@ -35,12 +44,12 @@ def main(args):
     for cc, c in enumerate(args.color):
         scalar, affine = load_nifti(flnm.new(c))
         scalar_dict[cc]["name"] = c
-        scalar_dict[cc]["values"] = scalar
+        scalar_dict[cc]["values"] = scalar[:, :, sdx]
 
     # masks
     if args.maskfile is not None:
         mask, _ = load_nifti(args.maskfile)
-        x1, x2, y1, y2 = roi.square_from_mask(mask, return_indices=True)
+        x1, x2, y1, y2 = roi.square_from_mask(mask[:, :, sdx], return_indices=True)
 
         if args.tensors is not None:
             evecs, evals = evecs[x1:x2, y1:y2], evals[x1:x2, y1:y2]
@@ -52,17 +61,19 @@ def main(args):
     if args.surf:
 
         # call segmentation GUI
-        if args.tensors is False:
-            seg_mask = roi.Segment_surfs(scalar_dict).run()
+        if args.reload:
+            surfs = np.load(flnm.new("seg_" + str(sdx), "npy"), allow_pickle=True).tolist()
+            seg_mask, surfs = roi.Segment_surfs(scalar_dict, evecs, evals).run(surfs)
         else:
-            seg_mask = roi.Segment_surfs(scalar_dict, evecs, evals).run()
+            seg_mask, surfs = roi.Segment_surfs(scalar_dict, evecs, evals).run()
 
         # account for original mask (used to crop image before plotting)
         if args.maskfile is not None:
             seg_mask = np.pad(seg_mask, [(x1, mask.shape[0]-x2), (y1, mask.shape[1]-y2)])
 
-        # save mask
-        save_nifti(flnm.new("seg"), seg_mask.astype(int), affine)
+        # save mask and control points
+        save_nifti(flnm.new("seg_" + str(sdx)), seg_mask.astype(int), affine)
+        np.save(flnm.new("seg_" + str(sdx), "npy"), np.array(surfs, dtype=object))
 
     # AHA model segmentation
     if args.aha is not None:
@@ -70,10 +81,11 @@ def main(args):
         seg = 6 if args.aha in ["base", "mid"] else 4
 
         # call segmentation GUI
-        if args.tensors is False:
-            labels = roi.Segment_aha(scalar_dict).run(seg)
+        if args.reload:
+            points = np.load(flnm.new("aha_" + str(sdx), "npy"), allow_pickle=True)
+            labels, points = roi.Segment_aha(scalar_dict, evecs, evals).run(seg, points)
         else:
-            labels = roi.Segment_aha(scalar_dict, evecs, evals).run(seg)
+            labels, points = roi.Segment_aha(scalar_dict, evecs, evals).run(seg)
     
         # adjust labels
         if args.aha == "base":
@@ -83,12 +95,75 @@ def main(args):
         if args.aha == "api":
             labels = labels + 12
 
-        im = plt.imshow(labels.T, cmap="turbo")
-        plt.colorbar(im)
-        plt.show()
+        # save a label map and control points
+        save_nifti(flnm.new("aha_" + str(sdx)), labels.astype(int), affine)
+        np.save(flnm.new("aha_" + str(sdx), "npy"), np.array(points))
 
-        # save a label map
-        save_nifti(flnm.new("aha"), labels.astype(int), affine)
+    # local coordinate system
+    if args.coords:
+        # FIXME: put this routine into coords.py, probably
+
+        k = 3
+        [x, y] = np.load(flnm.new("seg_" + str(sdx), "npy"), allow_pickle=True).tolist()
+        P = np.zeros((0,2))
+        num = 300  # seems to give robust enough results
+        V = np.zeros(2*num)
+        for srf in [1, 0]:
+            X = np.r_[x[srf], x[srf][0]]
+            Y = np.r_[y[srf], y[srf][0]]
+            tck, u = interpolate.splprep([X, Y], s=0, per=True, k=k)
+            xi, yi = interpolate.splev(np.linspace(0, 1, num), tck)
+            p = np.hstack([xi[:, None], yi[:, None]])
+            P = np.vstack([P, p])
+            V[num*srf:(num*srf+num)] = srf
+
+        # solve RBF problem
+        from scipy.interpolate import RBFInterpolator
+        rbf = RBFInterpolator(P, V)
+        labels, _ = load_nifti(flnm.new("aha_" + str(sdx)))
+
+        N = 5 # must be odd
+        if N % 2 == 0:
+            print("need to upsample to odd number")
+            sys.exit()
+        S = int((N - 1) / 2)
+
+        [Y, X] = np.meshgrid(range(N*labels.shape[1]), range(N*labels.shape[0]))
+        X, Y = X/N - S/N, Y/N - S/N
+        XY = np.column_stack((X.ravel(), Y.ravel()))
+        Ytest = rbf(XY)
+        Ytest = Ytest.reshape(N*labels.shape[0], -1).T
+
+        # calculate gradient
+        [gx, gy] = np.gradient(Ytest)
+        norm = np.sqrt(gx**2 + gy**2)
+        gx, gy = gx / norm, gy / norm
+
+        # subsample back to original resolution
+        Ytest = Ytest[S:Ytest.shape[0]:N, S:Ytest.shape[1]:N] 
+        gx = gx[S:gx.shape[0]:N, S:gx.shape[1]:N] 
+        gy = gy[S:gy.shape[0]:N, S:gy.shape[1]:N] 
+
+        # calculate circ
+        rad = np.dstack([gx[..., None], gy[..., None], np.zeros_like(gx)[..., None]])
+        rad, lon, cir = LV_coords(Ytest.shape, None, rad)
+        
+        # plots
+        if True: # for debugging, doesn't need plotting to user...
+            fix, ax = plt.subplots(1,2)
+            for idx in range(2):
+                ax[idx].imshow(Ytest, vmin = 0, vmax = 1)
+                ax[idx].plot(P[0:num, 0], P[0:num, 1])
+                ax[idx].plot(P[num:, 0], P[num:, 1])
+            ax[0].quiver(rad[..., 1], rad[..., 0], color="white", angles="xy", scale_units="xy", scale=2)
+            ax[1].quiver(cir[..., 1], cir[..., 0], color="white", angles="xy", scale_units="xy", scale=2)
+            ax[0].set_title("radial")
+            ax[1].set_title("circ")
+            plt.show()
+
+        coords = np.stack((rad, lon, cir), axis=-1)
+        np.save(flnm.new("coords_" + str(sdx), "npy"), coords)
+        
 
 
 if __name__ == "__main__":
@@ -113,8 +188,14 @@ if __name__ == "__main__":
     parser.add_argument("--aha", type = str, required = False, default = None,
                         choices = ["base", "mid", "api"], help = "Segment AHA model")
 
+    parser.add_argument("-r", "--reload", required = False, default = False,
+                        action = "store_true", help = "Reload previous surface segmentation")
+
     parser.add_argument("-m", "--maskfile", type = str, required = False,
                         default = None, help = "Use a mask when identifying outliers")
+
+    parser.add_argument("--coords", required = False, default = False,
+                        action = "store_true", help = "Local coordinate system from surfaces")
 
     #parser.add_argument("--eigen", required = False, type = str, default = None,
     #                    help = "Base name of evecs and evals files")
@@ -125,4 +206,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+
+
+# check segmentation
+#fig, ax = plt.subplots(1,1)
+#im = plt.imshow(labels.T, cmap="turbo")
+#divider = make_axes_locatable(ax)
+#cax = divider.append_axes('right', size='10%', pad=0.1)
+#cbar = plt.colorbar(im, cax) #=self.ax)
+#plt.show()
 
