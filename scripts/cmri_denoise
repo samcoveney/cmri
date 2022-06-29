@@ -158,6 +158,8 @@ def main(args):
             # crop the images before the quality control GUI
             if args.maskfile is not None:
                 x1, x2, y1, y2 = roi.square_from_mask(mask[:, :, sdx], return_indices=True)
+            else:
+                x1, x2, y1, y2 = 0, data.shape[0], 0, data.shape[1]
         
             # GUI to select threshold
             good_img[sdx, :] = Select_outliers(data[x1:x2, y1:y2, sdx], data_f[x1:x2, y1:y2], MI, bvals).run()
