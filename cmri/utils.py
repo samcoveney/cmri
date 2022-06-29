@@ -50,17 +50,20 @@ def cyclic_turbo(deg=70):
     # setup colors 
     turbo = cm.get_cmap('turbo', 256)
 
-    newcolors = turbo(np.linspace(0, 1, 256))
-    num = np.ceil(((90-deg)/90)*256).astype(int)  # begin change around +/-deg
+    newcolors = turbo(np.linspace(0.05, 0.95, 256))  # don't keep ends, too dark
+    num = np.floor(((90-deg)/90)*256/2).astype(int)  # begin change around +/-deg
 
-    violet = np.array([148/256, 0/256, 211/256, 1])
-    #violet = (newcolors[num] + newcolors[-num-1]) / 2.0
+    black = np.array([0, 0, 0, 1])
 
+    black_blue = np.empty((num, 4))
     for idx in range(0, num):
-        newcolors[idx] = newcolors[num, :]*(idx/num) + violet*(1.0 - idx/num)
+        black_blue[idx] = newcolors[0, :]*(idx/num) + black*(1.0 - idx/num)
 
+    red_black = np.empty((num, 4))
     for idx in range(0, num):
-        newcolors[-idx-1] = newcolors[-num-1, :]*(idx/num) + violet*(1.0 - idx/num)
+        red_black[-idx-1] = newcolors[-1, :]*(idx/num) + black*(1.0 - idx/num)
+
+    newcolors = np.vstack([black_blue, newcolors, red_black])
 
     cturbo = ListedColormap(newcolors)
     
@@ -107,7 +110,7 @@ def get_colors(color):
     
     if color in  ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a']:
         if color in ["ha", "hap"]:
-            cturbo = cyclic_turbo(deg=80)
+            cturbo = cyclic_turbo(deg=60)
             cmap, vmin, vmax = cturbo, -90.0, +90.0
 
         if color in ["ia", "ta"]:
@@ -132,4 +135,29 @@ def get_colors(color):
         cmap, vmin, vmax = turbo, None, None
 
     return cmap, vmin, vmax
+
+
+#def cyclic_turbo(deg=70):
+#    """Create a cyclic turbo colormap with violet on ends.
+#       Violet begins appearing after +/-deg for range -90 to 90 degrees."""
+#
+#    # setup colors 
+#    turbo = cm.get_cmap('turbo', 256)
+#
+#    newcolors = turbo(np.linspace(0, 1, 256))
+#    num = np.ceil(((90-deg)/90)*256).astype(int)  # begin change around +/-deg
+#
+#    violet = np.array([148/256, 0/256, 211/256, 1])
+#    #violet = (newcolors[num] + newcolors[-num-1]) / 2.0
+#
+#    for idx in range(0, num):
+#        newcolors[idx] = newcolors[num, :]*(idx/num) + violet*(1.0 - idx/num)
+#
+#    for idx in range(0, num):
+#        newcolors[-idx-1] = newcolors[-num-1, :]*(idx/num) + violet*(1.0 - idx/num)
+#
+#    cturbo = ListedColormap(newcolors)
+#    
+#    return cturbo
+
 

@@ -84,6 +84,7 @@ def main(args):
             b0ref = int(b0refs[sdx])
 
             # FIXME: need option for pipeline=['rigid', 'affine']
+            # FIXME: need to record the reg params when registering series
             reg_data[:, :, sdx, :] = register_dwi_series(data_slice, gtab=gtab, b0_ref=b0ref,\
                                            denoise=True, static_mask=mask,\
                                            pipeline=pipeline,\

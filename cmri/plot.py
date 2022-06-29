@@ -134,6 +134,7 @@ class Multiplot(object):
             cax = divider.append_axes('right', size='10%', pad=0.1)
             self.cbar = plt.colorbar(self.im, cax) #=self.ax)
             self.cbar.set_label(self.scalars[self.cidx]["name"])
+            self.ax.set_facecolor(color="white")
 
         self.cbar.set_label(self.scalars[self.cidx]["name"])
         self.fig.canvas.mpl_connect('key_press_event', self.key_press)
@@ -167,8 +168,6 @@ class Multiplot(object):
                 self.im.set_data(scalars.reshape(self.Nx, self.Ny).T)
                 self.im.set_clim(vmin, vmax)
                 self.im.set_cmap(cmap)
-       
-            self.fig.canvas.draw_idle()
             
         #if event.key in ["left", "right", "down", "up"]:
         if event.key in ["end", "pagedown", "down", "begin"]:
@@ -194,12 +193,8 @@ class Multiplot(object):
             else:
                 self.im.set_clim(vmin, vmax)
 
-            self.fig.canvas.draw_idle()
+        self.fig.canvas.draw_idle()
 
-        if event.key in ["enter"]:
-            print("trying to redraw")
-            self.fig.canvas.draw_idle()
-            
 
     def run(self):
         """Just plotting"""

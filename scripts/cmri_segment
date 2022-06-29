@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy import interpolate
+from scipy.interpolate import RBFInterpolator
 
 import cmri.utils as utils
 import cmri.roi as roi
@@ -26,8 +27,8 @@ def main(args):
     # set filename
     flnm = utils.Filename(args.filename, "", args.ext)
 
-    # TODO: slice index
-    sdx = 0
+    # slice index
+    sdx = args.slice
 
     # load tensor results
     if args.tensors:
@@ -103,10 +104,12 @@ def main(args):
     if args.coords:
         # FIXME: put this routine into coords.py, probably
 
+        # FIXME: the resulting coordinate sysytems are (138, 52, 3), should be (52, 138, 3) instead
+
         k = 3
         [x, y] = np.load(flnm.new("seg_" + str(sdx), "npy"), allow_pickle=True).tolist()
         P = np.zeros((0,2))
-        num = 300  # seems to give robust enough results
+        num = 100  # seems to give robust enough results
         V = np.zeros(2*num)
         for srf in [1, 0]:
             X = np.r_[x[srf], x[srf][0]]
@@ -118,9 +121,9 @@ def main(args):
             V[num*srf:(num*srf+num)] = srf
 
         # solve RBF problem
-        from scipy.interpolate import RBFInterpolator
-        rbf = RBFInterpolator(P, V)
+        rbf = RBFInterpolator(P, V, smoothing=1e-2)
         labels, _ = load_nifti(flnm.new("aha_" + str(sdx)))
+        print("labels.shape:", labels.shape)
 
         N = 5 # must be odd
         if N % 2 == 0:
@@ -131,8 +134,12 @@ def main(args):
         [Y, X] = np.meshgrid(range(N*labels.shape[1]), range(N*labels.shape[0]))
         X, Y = X/N - S/N, Y/N - S/N
         XY = np.column_stack((X.ravel(), Y.ravel()))
+        print("XY shape:", XY.shape)
         Ytest = rbf(XY)
-        Ytest = Ytest.reshape(N*labels.shape[0], -1).T
+        Ytest = Ytest.reshape(N*labels.shape[0], -1)
+
+        #import IPython as ipy
+        #ipy.embed()
 
         # calculate gradient
         [gx, gy] = np.gradient(Ytest)
@@ -152,11 +159,11 @@ def main(args):
         if True: # for debugging, doesn't need plotting to user...
             fix, ax = plt.subplots(1,2)
             for idx in range(2):
-                ax[idx].imshow(Ytest, vmin = 0, vmax = 1)
+                tmp = ax[idx].imshow(Ytest.T, vmin = 0, vmax = 1)
                 ax[idx].plot(P[0:num, 0], P[0:num, 1])
                 ax[idx].plot(P[num:, 0], P[num:, 1])
-            ax[0].quiver(rad[..., 1], rad[..., 0], color="white", angles="xy", scale_units="xy", scale=2)
-            ax[1].quiver(cir[..., 1], cir[..., 0], color="white", angles="xy", scale_units="xy", scale=2)
+            ax[0].quiver(rad[..., 0].T, rad[..., 1].T, color="white", angles="xy", scale_units="xy", scale=2)
+            ax[1].quiver(cir[..., 0].T, cir[..., 1].T, color="white", angles="xy", scale_units="xy", scale=2)
             ax[0].set_title("radial")
             ax[1].set_title("circ")
             plt.show()
@@ -181,6 +188,9 @@ if __name__ == "__main__":
 
     parser.add_argument("-t", "--tensors", required = False, default = False,
                         action = "store_true", help = "Plot using tensors")
+
+    parser.add_argument("-s", "--slice", type = int, required = True,
+                        help = "Slice index (index from 0)")
 
     parser.add_argument("--surf", required = False, default = False,
                         action = "store_true", help = "Segment surfaces")
@@ -207,12 +217,4 @@ if __name__ == "__main__":
 
     main(args)
 
-
-# check segmentation
-#fig, ax = plt.subplots(1,1)
-#im = plt.imshow(labels.T, cmap="turbo")
-#divider = make_axes_locatable(ax)
-#cax = divider.append_axes('right', size='10%', pad=0.1)
-#cbar = plt.colorbar(im, cax) #=self.ax)
-#plt.show()
 

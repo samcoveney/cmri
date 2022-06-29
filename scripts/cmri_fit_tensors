@@ -6,6 +6,7 @@ import sys
 import numpy as np
 import numbers
 import time
+from scipy.ndimage import zoom
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -78,18 +79,6 @@ def main(args):
             tenfit = tenmodel.fit(data[:, :, [sdx], gidx], mask) 
             evecs[:, :, sdx, :, :], evals[:, :, sdx, :], S0[:, :, sdx] = tenfit.evecs, tenfit.evals, tenfit.S0_hat
 
-            # FIXME: maybe a better place for this code
-            if args.predict is not None:
-
-                # fit tensor model
-                dti_params = np.dstack([tenfit.evals, tenfit.evecs.reshape(tenfit.shape[0:2] + (-1,))])
-                bval_predict = args.predict
-                # FIXME: supply at least one low b0 in order to remove warning
-                gtab_new = gradient_table(np.full_like(bvals, bval_predict), bvecs, b0_threshold = bval_predict)
-                data_f = dti.tensor_prediction(dti_params, gtab_new, tenfit.S0_hat)
-                data_f = data_f.mean(axis=-1)
-                save_nifti(flnm.new('b' + str(bval_predict) + '_mean'), data_f, affine)
-
         # save tensor fit
         save_nifti(flnm.new('evecs'), evecs, affine)
         save_nifti(flnm.new('evals'), evals, affine)
@@ -100,6 +89,24 @@ def main(args):
         MD = mean_diffusivity(evals)
         save_nifti(flnm.new('fa'), FA, affine)
         save_nifti(flnm.new('md'), MD, affine)
+
+
+    # predict signal from fit
+    if args.predict is not None:
+
+        evecs, _ = load_nifti(flnm.new('evecs'))
+        evals, _ = load_nifti(flnm.new('evals'))
+        S0, _ = load_nifti(flnm.new('s0'))
+        # fit tensor model
+        #import IPython as ipy
+        #ipy.embed()
+        dti_params = np.append(evals, evecs.reshape(evecs.shape[0:3] + (-1,)), axis=-1)
+        bval_predict = args.predict
+        # FIXME: supply at least one low b0 in order to remove warning
+        gtab_new = gradient_table(np.full_like(bvals, bval_predict), bvecs, b0_threshold = bval_predict)
+        data_f = dti.tensor_prediction(dti_params, gtab_new, S0)
+        data_f = data_f.mean(axis=-1)
+        save_nifti(flnm.new('b' + str(bval_predict) + '_predict'), data_f, affine)
 
 
     # select LV center
@@ -143,7 +150,11 @@ def main(args):
         for sdx in range(data.shape[2]):
 
             # FIXME: slice specific
-            rad, lon, cir = LV_coords(evecs.shape[0:2], LVcent[sdx])
+            if args.coords:
+                coords = np.load(flnm.new("coords_" + str(sdx), "npy"))
+                [rad, lon, cir] = [coords[..., idx] for idx in range(3)]
+            else:
+                rad, lon, cir = LV_coords(evecs.shape[0:2], LVcent[sdx])
             
             # determining directions of evecs wrt to LV coordinates
             # -----------------------------------------------------
@@ -265,6 +276,9 @@ if __name__ == "__main__":
     parser.add_argument("-a", "--angles", required = False, default = False,
                         action = "store_true", help = "Calculate tensor angles")
 
+    parser.add_argument("--coords", required = False, default = False,
+                        action = "store_true", help = "Use local coordinate system to calculate angles")
+
     args = parser.parse_args()
 
     main(args)
@@ -299,3 +313,83 @@ if __name__ == "__main__":
 #                rot = np.array([[+1, 0, 0],
 #                                [0, +1, 0],
 #                                [0, 0, -1]])
+
+
+#    parser.add_argument("-u", "--upsample", required = False, default = False,
+#                        action = "store_true", help = "Upsample at level of tensors")
+#
+#    # simple upsampling approach using Log-Euclidean metric
+#    if args.upsample:
+#
+#        evecs, _ = load_nifti(flnm.new('evecs'))
+#        evals, _ = load_nifti(flnm.new('evals'))
+#        S0, _ = load_nifti(flnm.new('s0'))
+#
+#        # Log-Euclidean
+#        log_evals = np.log(evals)
+#        #test = np.einsum('ijkl,ijklm->', evals, evecs)  # evecs.T diag(evals) evecs
+#        #LE = np.einsum('ijkml,ijkl,ijklm->ijklm', evecs, log_evals, evecs)  # evecs.T diag(evals) evecs
+#        LE = np.einsum('ijkl,ijkml->ijkml', log_evals, evecs)  # evecs.T diag(evals) evecs # NOTE: seems okay
+#        print(log_evals[0, 0, 0, :])
+#        print(evecs[0, 0, 0, :, :])
+#        print(LE[0, 0, 0, :, :])
+#        LE = np.einsum('ijkol,ijkml->ijkom', evecs, LE)  # evecs.T diag(evals) evecs
+#        print(LE.shape)
+#        print(LE[0, 0, 0, :, :])
+#        print("done!")
+#
+#        factor = 4
+#
+#        new_D = np.empty((factor*evecs.shape[0], factor*evecs.shape[1], evecs.shape[0], 3, 3))        
+#        new_evecs = np.empty((factor*evecs.shape[0], factor*evecs.shape[1], evecs.shape[0], 3, 3))        
+#        new_evals = np.empty((factor*evecs.shape[0], factor*evecs.shape[1], evecs.shape[0], 3))        
+#
+#        for sdx in range(evecs.shape[2]):
+#
+#            tmp = LE[:, :, sdx, :, :].reshape(evecs.shape[0], evecs.shape[1], 9)
+#            print(tmp.shape)
+#            print("before:", tmp[0,0].reshape(3,3))
+#
+#            tmp = zoom(tmp, zoom=(factor, factor, 1))  # NOTE: is symmetric matrix! should account for this by average D and D'
+#            print(tmp.shape)
+#            print("after:", tmp[0,0].reshape(3,3))
+#            #tmp = tmp.reshape(:, :, 3, 3)  # final shape we want
+#            tmp = tmp.reshape(-1, 3, 3)  # flatten the spatial dimension
+#
+#            # solve eigen-problem
+#            q, v = np.linalg.eig(tmp)
+#
+#            # recreate tensor
+#            D = np.einsum('il,iml->iml', np.exp(q), v)  # evecs.T diag(evals) evecs # NOTE: seems okay
+#            D = np.einsum('iol,iml->iom', v, D)  # evecs.T diag(evals) evecs
+#
+#            # resolve eigenproblem
+#            q, v = np.linalg.eig(D)
+#            print(q.shape, v.shape)
+#
+#            new_evecs[:, :, sdx, :, :] = np.real(v.reshape(new_evecs.shape[0], new_evecs.shape[1], 3, 3))
+#            new_evals[:, :, sdx, :] = np.real(q.reshape(new_evecs.shape[0], new_evecs.shape[1], 3))
+#
+#            if False:
+#                q = q.reshape(2*evecs.shape[0], 2*evecs.shape[1], 3)
+#                v = v.reshape(2*evecs.shape[0], 2*evecs.shape[1], 3, 3)
+#                print(q.shape, v.shape)
+#                
+#                # recombine
+#                D = np.einsum('ijl,ijml->ijml', np.exp(q), v)  # evecs.T diag(evals) evecs # NOTE: seems okay
+#                D = np.einsum('ijol,ijml->ijom', v, D)  # evecs.T diag(evals) evecs
+#
+#                new_D[:, :, sdx, :, :]  = np.real(D)  # NOTE: should be real anyway
+#
+#
+#        # interpolation at the image stage, like my original ideas, is probably better here
+#
+#        # check answer 
+#        FA = fractional_anisotropy(new_evals[:, :, 0, :])
+#        MD = mean_diffusivity(new_evals[:, :, 0, :])
+#        print(MD.min(), MD.max(), FA.min(), FA.max())
+#        fig, ax = plt.subplots(1,2)
+#        ax[0].imshow(FA.T, cmap="turbo", vmin=0, vmax=1.0)
+#        ax[1].imshow(MD.T, cmap="turbo", vmin=0, vmax=2.5e-3)
+#        plt.show()
+

@@ -22,7 +22,7 @@ def LV_coords(image_shape, LVcent, rad=None):
     lon[:, :, 2] = +1.0 
 
     lon = lon / np.linalg.norm(lon, axis=-1)[..., None]
-    #lon *= -1  # FIXME: debugging still
+    lon *= -1  # FIXME: debugging still
 
     # circular direction - should be clockwise looking from base to apex
     cir = np.cross(rad, lon)

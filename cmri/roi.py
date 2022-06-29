@@ -130,11 +130,19 @@ class Segment_surfs(Multiplot):
                 self.y[srf] = np.array([], dtype=float)
         else:
             [self.x, self.y] = surfs
+            self.x = [np.array(a) for a in self.x]
+            self.y = [np.array(a) for a in self.y]
+
+        #import IPython as ipy
+        #ipy.embed()
 
         # set masks
         self.mask = [None, None]
         self.mask[0] = np.ones((self.Nx, self.Ny), dtype=bool)
         self.mask[1] = np.ones((self.Nx, self.Ny), dtype=bool)
+
+        # for setting alpha
+        self.use_alpha = True
 
         # update the plots
         self.update()
@@ -144,7 +152,19 @@ class Segment_surfs(Multiplot):
         plt.show()
 
         # return the mask
-        return self.mask[0] * ~self.mask[1], [self.x, self.y]
+        return self.mask_total, [self.x, self.y]
+
+
+    def key_press(self, event):
+        """Replaces base class key_press, so we can add functionality""" 
+
+        if event.key == "alt":
+            self.use_alpha = not self.use_alpha
+            self.alpha()
+
+        # calls display() of superclass 
+        super(Segment_surfs, self).key_press(event)
+
 
     def button_press_callback(self, event):
         'whenever a mouse button is pressed'
@@ -155,8 +175,12 @@ class Segment_surfs(Multiplot):
         if event.button == 3:  # right-click = place points
 
             if self.x[self.srf].size > 0:
-                self.x[self.srf] = np.hstack([self.x[self.srf], event.xdata])
-                self.y[self.srf] = np.hstack([self.y[self.srf], event.ydata])
+                if ~np.any(np.isclose(self.x[self.srf], event.xdata)) or\
+                   ~np.any(np.isclose(self.y[self.srf], event.ydata)):
+                    self.x[self.srf] = np.hstack([self.x[self.srf], event.xdata])
+                    self.y[self.srf] = np.hstack([self.y[self.srf], event.ydata])
+                else:
+                    print("Placement too close, doing nothing")
             else:
                 self.x[self.srf] = np.array([event.xdata])
                 self.y[self.srf] = np.array([event.ydata])
@@ -203,7 +227,7 @@ class Segment_surfs(Multiplot):
         
         # plot points for first time
         if self.points[self.srf] is None and self.x[self.srf].size > 0:
-            self.points[self.srf], = self.ax.plot(self.x[self.srf], self.y[self.srf], 'ow')
+            self.points[self.srf], = self.ax.plot(self.x[self.srf], self.y[self.srf], 'ow', markersize=10)
     
         # update curve
         k = 3
@@ -225,7 +249,7 @@ class Segment_surfs(Multiplot):
                 self.curve[self.srf].set_ydata(yi)
             # plot curve for first time
             else:
-                self.curve[self.srf], = self.ax.plot(xi, yi, self.ls)
+                self.curve[self.srf], = self.ax.plot(xi, yi, self.ls, linewidth=5)
 
         # create mask
         if self.curve[self.srf] is not None:
@@ -234,13 +258,9 @@ class Segment_surfs(Multiplot):
 
             self.mask[self.srf][:, :] = poly_path.contains_points(self.coors).reshape(self.Nx, self.Ny)
 
-            mask_total = self.mask[0] * ~self.mask[1]
-            alpha = (mask_total + 0.8) / (1.8) 
+            self.mask_total = self.mask[0] * ~self.mask[1]
 
-            if (self.evecs is not None) and (self.evals is not None): 
-                self.ax.collections[0].set_alpha(alpha)
-            else:
-                self.im.set_alpha(alpha.T)
+            self.alpha()
 
         #self.ax.set_xlim(-0.5, self.Nx-0.5)
         #self.ax.set_ylim(self.Ny-0.5, -0.5)
@@ -248,21 +268,40 @@ class Segment_surfs(Multiplot):
         # redraw canvas while idle
         self.fig.canvas.draw_idle()
 
+
+    def alpha(self):
+
+        # set alpha
+        if self.use_alpha:
+            alpha = (self.mask_total + 0.2) / (1.2)
+            #alpha = (self.mask_total).astype(float)
+        else:
+            alpha = np.ones_like(self.mask_total, dtype=float)
+
+        if (self.evecs is not None) and (self.evals is not None): 
+            self.ax.collections[0].set_alpha(alpha)
+        else:
+            self.im.set_alpha(alpha.T)
+
+
     def reorder(self):
         """ensure points are ordered to create a non-crossing loop"""
-        # re-arrange the points to make a circle
-        com = np.array([self.x[self.srf].mean(), self.y[self.srf].mean()])
-        x = self.x[self.srf] - com[0]
-        y = self.y[self.srf] - com[1]
 
-        angles = np.abs(np.arctan(y / x))
-        angles[(y < 0) & (x < 0)] = np.pi + angles[(y < 0) & (x < 0)] # Q3
-        angles[(y > 0) & (x < 0)] = np.pi - angles[(y > 0) & (x < 0)] # Q2
-        angles[(y < 0) & (x > 0)] = 2*np.pi - angles[(y < 0) & (x > 0)] # Q4
+        if self.x[self.srf].size >= 3:
 
-        args = np.argsort(angles)
-        self.x[self.srf] = self.x[self.srf][args]
-        self.y[self.srf] = self.y[self.srf][args]
+            # re-arrange the points to make a circle
+            com = np.array([self.x[self.srf].mean(), self.y[self.srf].mean()])
+            x = self.x[self.srf] - com[0]
+            y = self.y[self.srf] - com[1]
+
+            angles = np.abs(np.arctan(y / x))
+            angles[(y < 0) & (x < 0)] = np.pi + angles[(y < 0) & (x < 0)] # Q3
+            angles[(y > 0) & (x < 0)] = np.pi - angles[(y > 0) & (x < 0)] # Q2
+            angles[(y < 0) & (x > 0)] = 2*np.pi - angles[(y < 0) & (x > 0)] # Q4
+
+            args = np.argsort(angles)
+            self.x[self.srf] = self.x[self.srf][args]
+            self.y[self.srf] = self.y[self.srf][args]
 
     def get_ind_under_point(self, event):
         """get the index of the vertex under point if within epsilon tolerance"""
