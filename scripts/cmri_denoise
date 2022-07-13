@@ -1,7 +1,11 @@
 #!python
 """Script for denoising an image series and identifying outliers."""
 
+import signal
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 import argparse
+from os.path import exists
 import numpy as np
 import numbers
 import time
@@ -37,68 +41,6 @@ def main(args):
 
     # load bdata
     bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
-    gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
-
-    # how many unique (Bval, Bvec) do we have
-    consider_unique = False  
-    if consider_unique:
-        NUM = data.shape[-1]
-    else:
-        tmp = bvals[:, None] * bvecs
-        if False:
-            NUM = np.unique(tmp, axis = 0).shape[0] # counts opposite directions as unique
-        else:
-            tmp *= np.sign(tmp[:, [0]])
-            NUM = np.unique(tmp, axis = 0).shape[0] # counts opposite directions as equivalent
-
-    # denoise with PCA
-    if args.denoise:
-
-        # default patch size
-        if args.radius is None:
-            root = np.ceil(NUM ** (1./2))  # 2D
-            root = root + 1 if (root % 2) == 0 else root  # make odd
-            patch_radius = int((root - 1) / 2)  # suggested patch_radius
-            print("Setting patch_radius to", patch_radius)
-        else:
-            patch_radius = args.radius
-
-        # load mask file
-        if args.maskfile is not None:
-            print("Denoising for mask ROI only")
-            mask, _ = load_nifti(args.maskfile)
-
-        # array for storing results
-        data_denoised = data.copy()
-        sigma = np.zeros(data.shape[0:3])
-
-        # loop over slices
-        for sdx in range(data.shape[2]):
-            print("\nslice:", sdx)
-
-            # crop the images before denoising, to save time
-            if args.maskfile is not None:
-                x1, x2, y1, y2 = roi.square_from_mask(mask[:, :, sdx], return_indices=True)
-                x1 = x1 - 2*patch_radius if x1 - 2*patch_radius > 0 else 0
-                x2 = x2 + 2*patch_radius if x2 + 2*patch_radius <= data.shape[0] else data.shape[0]
-                y1 = y1 - 2*patch_radius if y1 - 2*patch_radius > 0 else 0
-                y2 = y2 + 2*patch_radius if y2 + 2*patch_radius <= data.shape[1] else data.shape[1]
-            else:
-                x1, x2, y1, y2 = 0, data.shape[0], 0, data.shape[1]
-
-            # estimate noise
-            sigma[x1:x2, y1:y2, [sdx]] = pca_noise_estimate(data[x1:x2, y1:y2, [sdx], :], gtab, patch_radius=patch_radius,
-                                         correct_bias=True, smooth=3)
-
-            # denoise array
-            data_denoised[x1:x2, y1:y2, [sdx], :] = localpca(data[x1:x2, y1:y2, [sdx], :], sigma[x1:x2, y1:y2, [sdx]], tau_factor=2.3,
-                                      patch_radius=patch_radius, suppress_warning=True)
-
-        # save noise
-        save_nifti(flnm.new("noise"), sigma, affine)
-
-        # save denoised
-        save_nifti(flnm.new("denoised"), data_denoised, affine)
 
 
     # outlier detection
@@ -120,6 +62,7 @@ def main(args):
             print("\nslice:", sdx)
 
             # fit slice-by-slice
+            gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
             tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
             tenfit = tenmodel.fit(data[:, :, sdx])
             dti_params = np.dstack([tenfit.evals, tenfit.evecs.reshape(tenfit.shape[0:2] + (-1,))])  # NOTE: (given the reshaping in dti.tensor_prediction, this seems right)
@@ -166,6 +109,89 @@ def main(args):
 
         # save 1d 'mask' (along acquisition dimension) of good images
         np.savetxt(flnm.new("outliers", "txt"), good_img, fmt='%d')
+
+
+    # denoise with PCA
+    if args.denoise:
+
+        # how many unique (Bval, Bvec) do we have
+        consider_unique = False  
+        if consider_unique:
+            NUM = data.shape[-1]
+        else:
+            tmp = bvals[:, None] * bvecs
+            if False:
+                NUM = np.unique(tmp, axis = 0).shape[0] # counts opposite directions as unique
+            else:
+                tmp *= np.sign(tmp[:, [0]])
+                NUM = np.unique(tmp, axis = 0).shape[0] # counts opposite directions as equivalent
+
+        # default patch size
+        if args.radius is None:
+            root = np.ceil(NUM ** (1./2))  # 2D
+            root = root + 1 if (root % 2) == 0 else root  # make odd
+            patch_radius = int((root - 1) / 2)  # suggested patch_radius
+            print("Setting patch_radius to", patch_radius)
+        else:
+            patch_radius = args.radius
+
+        # load mask file
+        if args.maskfile is not None:
+            print("Denoising for mask ROI only")
+            mask, _ = load_nifti(args.maskfile)
+
+        # load outliers file
+        outlier_file = flnm.new("outliers", "txt")
+        if exists(outlier_file):
+            print("removing outliers with:", outlier_file)
+            good_img = np.loadtxt(outlier_file).astype(int)
+            save_outliers = True
+        else:
+            print("no outliers file")
+            good_img = np.ones(data.shape[-2:], dtype="int")
+            save_outliers = False
+
+        # array for storing results
+        data_denoised = data.copy()
+        sigma = np.zeros(data.shape[0:3])
+
+        # loop over slices
+        for sdx in range(data.shape[2]):
+            print("\nslice:", sdx)
+
+            # crop the images before denoising, to save time
+            if args.maskfile is not None:
+                x1, x2, y1, y2 = roi.square_from_mask(mask[:, :, sdx], return_indices=True)
+                x1 = x1 - 2*patch_radius if x1 - 2*patch_radius > 0 else 0
+                x2 = x2 + 2*patch_radius if x2 + 2*patch_radius <= data.shape[0] else data.shape[0]
+                y1 = y1 - 2*patch_radius if y1 - 2*patch_radius > 0 else 0
+                y2 = y2 + 2*patch_radius if y2 + 2*patch_radius <= data.shape[1] else data.shape[1]
+            else:
+                x1, x2, y1, y2 = 0, data.shape[0], 0, data.shape[1]
+
+            # use non-outliers only
+            #gidx = np.squeeze(np.argwhere(good_img[sdx]))
+            gidx = np.nonzero(good_img[sdx])
+            data_good = data[x1:x2, y1:y2, [sdx], gidx]
+            gtab = gradient_table(bvals[gidx], bvecs[gidx], b0_threshold = bvals[gidx].min())
+
+            # estimate noise
+            sigma[x1:x2, y1:y2, [sdx]] = pca_noise_estimate(data_good, gtab, patch_radius=patch_radius,
+                                         correct_bias=True, smooth=3)
+
+            # denoise array  # FIXME: this slicing won't work!
+            data_denoised[x1:x2, y1:y2, [sdx], gidx] = localpca(data_good, sigma[x1:x2, y1:y2, [sdx]], tau_factor=2.3,
+                                      patch_radius=patch_radius, suppress_warning=True)
+
+        # save noise
+        save_nifti(flnm.new("noise"), sigma, affine)
+
+        # save denoised
+        save_nifti(flnm.new("denoised"), data_denoised, affine)
+
+        # save outliers again, for file naming reasons
+        if save_outliers: 
+            np.savetxt(flnm.new("denoised_outliers", "txt"), good_img, fmt='%d')
 
 
 if __name__ == "__main__":

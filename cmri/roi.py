@@ -6,9 +6,8 @@ from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
 from matplotlib import cm
 import matplotlib.gridspec as gridspec
-from matplotlib.widgets import EllipseSelector
-from matplotlib.patches import Ellipse
-from matplotlib.collections import EllipseCollection
+from matplotlib.widgets import EllipseSelector, RectangleSelector
+from matplotlib.patches import Ellipse, Rectangle
 import matplotlib.lines as lines
 from matplotlib.widgets import Button
 from matplotlib.path import Path
@@ -28,11 +27,19 @@ class Select_mask(Multiplot):
     def __init__(self, scalars, evecs=None, evals=None):
         super().__init__(scalars, evecs, evals)
 
-    def run(self):
+    def run(self, rectangle=True):
 
-        self.es = EllipseSelector(self.ax, self.onselect,
-                                  interactive=True, props={"fill": False},
-                                  drag_from_anywhere=True)
+        # rectangle or ellipse selector
+        self.rectangle = rectangle
+        if self.rectangle:
+            self.es = RectangleSelector(self.ax, self.onselect,
+                                        interactive=True, props={"fill": False},
+                                        drag_from_anywhere=True)
+        else:
+            self.es = EllipseSelector(self.ax, self.onselect,
+                                      interactive=True, props={"fill": False},
+                                      drag_from_anywhere=True)
+
         self.ax.set_title("Click & drag, adjust, close window.")
         plt.show()
 
@@ -40,9 +47,16 @@ class Select_mask(Multiplot):
 
     # selector callback method
     def onselect(self, eclick, erelease):
-        ext = self.es.extents
-        ellipse = Ellipse(self.es.center, ext[1]-ext[0], ext[3]-ext[2])
-        mask = ellipse.contains_points(self.coors)
+
+        if self.rectangle:
+            ext = self.es.extents[::-1]
+            shape = Rectangle([ext[2], ext[0]], ext[3]-ext[2], ext[1]-ext[0], )
+        else:
+            ext = self.es.extents
+            shape = Ellipse(self.es.center, ext[1]-ext[0], ext[3]-ext[2])
+
+        mask = shape.contains_points(self.coors)
+
         self.mask = mask.reshape(self.Nx, self.Ny).astype(np.int32)
         alpha = (self.mask + 0.3) / (1.3) 
 
@@ -140,6 +154,7 @@ class Segment_surfs(Multiplot):
         self.mask = [None, None]
         self.mask[0] = np.ones((self.Nx, self.Ny), dtype=bool)
         self.mask[1] = np.ones((self.Nx, self.Ny), dtype=bool)
+        self.mask_total = self.mask[0] * ~self.mask[1]
 
         # for setting alpha
         self.use_alpha = True
@@ -185,8 +200,8 @@ class Segment_surfs(Multiplot):
                 self.x[self.srf] = np.array([event.xdata])
                 self.y[self.srf] = np.array([event.ydata])
 
-            self.reorder()
-            self.update()
+            #self.reorder()
+            #self.update()
             return
 
         if event.button == 1:  # left-click = adjust points
@@ -216,9 +231,10 @@ class Segment_surfs(Multiplot):
         self.x[self.srf][self.pind] = event.xdata
         self.y[self.srf][self.pind] = event.ydata
 
+        # do not reorder here, user release point to trigger re-order
         self.update()
 
-    def update(self):
+    def update(self, curve_update=True):
 
         # update existing points 
         if self.points[self.srf] is not None:
@@ -230,37 +246,40 @@ class Segment_surfs(Multiplot):
             self.points[self.srf], = self.ax.plot(self.x[self.srf], self.y[self.srf], 'ow', markersize=10)
     
         # update curve
-        k = 3
-        if self.x[self.srf].size >= k:
-            X = np.r_[self.x[self.srf], self.x[self.srf][0]]
-            Y = np.r_[self.y[self.srf], self.y[self.srf][0]]
-            tck, u = interpolate.splprep([X, Y], s=0, per=True, k=k)
-            xi, yi = interpolate.splev(np.linspace(0, 1, 100), tck)
+        if curve_update:
+            k = 3
+            if self.x[self.srf].size >= k:
+                X = np.r_[self.x[self.srf], self.x[self.srf][0]]
+                Y = np.r_[self.y[self.srf], self.y[self.srf][0]]
+                tck, u = interpolate.splprep([X, Y], s=0, per=True, k=k)
+                xi, yi = interpolate.splev(np.linspace(0, 1, 100), tck)
 
-            # snap curves to nearest pixels
-            if False:
-                curve_coors = np.hstack((xi.reshape(-1, 1), yi.reshape(-1,1)))
-                tmp = self.coors[np.argmin(cdist(curve_coors, self.coors), axis=-1)]
-                xi, yi = tmp[:, 0], tmp[:, 1]
+                # snap curves to nearest pixels
+                if False:
+                    curve_coors = np.hstack((xi.reshape(-1, 1), yi.reshape(-1,1)))
+                    tmp = self.coors[np.argmin(cdist(curve_coors, self.coors), axis=-1)]
+                    xi, yi = tmp[:, 0], tmp[:, 1]
 
-            # update existing curve
+                # update existing curve
+                if self.curve[self.srf] is not None:
+                    self.curve[self.srf].set_xdata(xi)
+                    self.curve[self.srf].set_ydata(yi)
+                # plot curve for first time
+                else:
+                    self.curve[self.srf], = self.ax.plot(xi, yi, self.ls, linewidth=1)
+
+            # create mask
             if self.curve[self.srf] is not None:
-                self.curve[self.srf].set_xdata(xi)
-                self.curve[self.srf].set_ydata(yi)
-            # plot curve for first time
-            else:
-                self.curve[self.srf], = self.ax.plot(xi, yi, self.ls, linewidth=5)
+                tmp = np.vstack([xi, yi]).T
+                poly_path=Path(tmp)
 
-        # create mask
-        if self.curve[self.srf] is not None:
-            tmp = np.vstack([xi, yi]).T
-            poly_path=Path(tmp)
+                self.mask[self.srf][:, :] = poly_path.contains_points(self.coors).reshape(self.Nx, self.Ny)
 
-            self.mask[self.srf][:, :] = poly_path.contains_points(self.coors).reshape(self.Nx, self.Ny)
-
-            self.mask_total = self.mask[0] * ~self.mask[1]
-
-            self.alpha()
+                tmp = self.mask[0] * ~self.mask[1]
+                if not np.array_equal(tmp, self.mask_total):
+                    self.mask_total = tmp 
+                    if self.use_alpha:
+                        self.alpha()
 
         #self.ax.set_xlim(-0.5, self.Nx-0.5)
         #self.ax.set_ylim(self.Ny-0.5, -0.5)
@@ -276,12 +295,15 @@ class Segment_surfs(Multiplot):
             alpha = (self.mask_total + 0.2) / (1.2)
             #alpha = (self.mask_total).astype(float)
         else:
-            alpha = np.ones_like(self.mask_total, dtype=float)
+            alpha = None #np.ones_like(self.mask_total, dtype=float)
 
         if (self.evecs is not None) and (self.evals is not None): 
             self.ax.collections[0].set_alpha(alpha)
         else:
-            self.im.set_alpha(alpha.T)
+            if alpha is not None:
+                self.im.set_alpha(alpha.T)
+            else:
+                self.im.set_alpha(1.0)
 
 
     def reorder(self):

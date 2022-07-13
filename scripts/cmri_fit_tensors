@@ -2,6 +2,7 @@
 """Script for fitting tensors."""
 
 import argparse
+from os.path import exists
 import sys
 import numpy as np
 import numbers
@@ -29,39 +30,38 @@ def main(args):
 
     # load data (could load with sitk and convert to NumPy)
     data, affine = load_nifti(flnm.filename)
-    print("data shape:", data.shape)
-    print("affine matrix:", affine)
     data = data.astype(np.float64)
 
     # load bdata
     bvals, bvecs = read_bvals_bvecs(flnm.bval, flnm.bvec)
-    #gtab = gradient_table(bvals, bvecs, b0_threshold = bvals.min())
-    #print("bvecs:\n", bvecs)
-
-    # NOTE: this works, but might be preferable to define a square ROI based on the mask, and take subset of data
-    if args.maskfile is not None:
-        mask, _ = load_nifti(args.maskfile)
-    else:
-        mask = None #np.ones_like(data[..., 0])
-
-    if args.reorder is not None:
-        print("reordering/resigning bvec columns")
-
-        if len(args.reorder) != 9:
-            raise ValueError("--reorder (-r) must have 9 entries")
-
-        rot = np.array(args.reorder).reshape(3, 3)
-        bvecs = (rot.dot(bvecs.T)).T
-
-    if args.outliers is not None:
-        print("removing specified outliers")
-        good_img = np.loadtxt(args.outliers)
-    else:
-        good_img = np.ones(data.shape[-2:], dtype="int")
-
 
     # fit tensors
     if args.tensors:
+
+        # reorder and resign bvec columns
+        if args.reorder is not None:
+            print("reordering/resigning bvec columns")
+
+            if len(args.reorder) != 9:
+                raise ValueError("--reorder (-r) must have 9 entries")
+
+            rot = np.array(args.reorder).reshape(3, 3)
+            bvecs = (rot.dot(bvecs.T)).T
+
+        # load mask
+        if args.maskfile is not None:
+            mask, _ = load_nifti(args.maskfile)
+        else:
+            mask = None #np.ones_like(data[..., 0])
+
+        # load outliers file
+        outlier_file = flnm.new("outliers", "txt")
+        if exists(outlier_file):
+            print("removing outliers with:", outlier_file)
+            good_img = np.loadtxt(outlier_file).astype(int)
+        else:
+            print("no outliers file")
+            good_img = np.ones(data.shape[-2:], dtype="int")
 
         # for saving results
         evecs = np.zeros(data.shape[0:3] + (3,3))
@@ -74,7 +74,7 @@ def main(args):
             gidx = np.squeeze(np.argwhere(good_img[sdx]))
             gtab = gradient_table(bvals[gidx], bvecs[gidx, :], b0_threshold = bvals[gidx].min())
 
-            # fit tensor model
+            # fit tensor model (only in mask region)
             tenmodel = dti.TensorModel(gtab, fit_method="LS", return_S0_hat=True)
             tenfit = tenmodel.fit(data[:, :, [sdx], gidx], mask) 
             evecs[:, :, sdx, :, :], evals[:, :, sdx, :], S0[:, :, sdx] = tenfit.evecs, tenfit.evals, tenfit.S0_hat
@@ -97,13 +97,13 @@ def main(args):
         evecs, _ = load_nifti(flnm.new('evecs'))
         evals, _ = load_nifti(flnm.new('evals'))
         S0, _ = load_nifti(flnm.new('s0'))
+
         # fit tensor model
-        #import IPython as ipy
-        #ipy.embed()
         dti_params = np.append(evals, evecs.reshape(evecs.shape[0:3] + (-1,)), axis=-1)
         bval_predict = args.predict
-        # FIXME: supply at least one low b0 in order to remove warning
         gtab_new = gradient_table(np.full_like(bvals, bval_predict), bvecs, b0_threshold = bval_predict)
+
+        # predict image signal
         data_f = dti.tensor_prediction(dti_params, gtab_new, S0)
         data_f = data_f.mean(axis=-1)
         save_nifti(flnm.new('b' + str(bval_predict) + '_predict'), data_f, affine)
@@ -124,9 +124,8 @@ def main(args):
 
              scalar_dict = [{"name": "md", "values": val[:, :, sdx]}, {"name": "gray", "values": data[:, :, sdx, :].mean(axis=-1)}]
              x, y = roi.Select_point(scalar_dict).run()
-             LVcent += [[x, y]]
-
-        np.savetxt(flnm.new('LVcenter', "txt"), np.array(LVcent))
+             LVcent = [x, y]
+             np.savetxt(flnm.new('LVcenter_' + str(sdx), "txt"), np.array(LVcent))
 
 
     # calculate tensor angles
@@ -134,9 +133,6 @@ def main(args):
 
         # load diffusion tensors
         evecs, affine = load_nifti(flnm.new('evecs'))
-
-        # load LVcenter
-        LVcent = np.loadtxt(flnm.new('LVcenter', "txt"))
 
         # for saving all slice results
         HA_all = np.zeros(evecs.shape[0:3])
@@ -149,12 +145,13 @@ def main(args):
         # loop over slice
         for sdx in range(data.shape[2]):
 
-            # FIXME: slice specific
+            # create coordinate system
             if args.coords:
                 coords = np.load(flnm.new("coords_" + str(sdx), "npy"))
                 [rad, lon, cir] = [coords[..., idx] for idx in range(3)]
             else:
-                rad, lon, cir = LV_coords(evecs.shape[0:2], LVcent[sdx])
+                LVcent = np.loadtxt(flnm.new('LVcenter_' + str(sdx), "txt"))
+                rad, lon, cir = LV_coords(evecs.shape[0:2], LVcent)
             
             # determining directions of evecs wrt to LV coordinates
             # -----------------------------------------------------

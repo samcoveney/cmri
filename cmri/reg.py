@@ -74,6 +74,10 @@ def affine_registration_sitkimage(moving, static,
     if not(verbose):
         elastixImageFilter.LogToConsoleOff()
 
+    # for affine, only use a single resolution, since it is a refinement
+    if (len(pipeline) > 1) and (pipeline[-1] == "affine"):
+        elastixImageFilter.SetParameter(len(pipeline)-1, 'NumberOfResolutions', '1')
+
     #import IPython
     #IPython.embed()
 
@@ -195,6 +199,7 @@ def register_series(series, ref, pipeline=None, denoise=True, static_mask=None, 
 
     # for collecting results
     xformed = np.zeros(series.shape)
+    params_all = np.zeros((series.shape[-1], 5))  # NOTE: just collecting rigid transform info (first tranform should always be rigid)
 
     # convert NumPy array into ITK image series
     series = sitk.GetImageFromArray(series, isVector=True)
@@ -251,12 +256,17 @@ def register_series(series, ref, pipeline=None, denoise=True, static_mask=None, 
 
             xformed[..., ii] = sitk.GetArrayFromImage(transformed)
 
+            # record rigid transformation info
+            cx, cy = np.array(params[0]['CenterOfRotationPoint'], dtype=float)
+            theta, tx, ty = np.array(params[0]['TransformParameters'], dtype=float)
+            params_all[ii] = [cy, cx, ty, tx, theta]  # seems to work for "COMx, COMy, Tx, Ty, theta"
+
             time_per_run = time_per_run + (time.time() - start_time - time_per_run) / (ii + 1) 
             time_left = time.strftime('%H:%M:%S', time.gmtime((num_acq - ii - 1)*time_per_run))
 
     utils.progress_bar(num_acq, num_acq, prefix = '', suffix = ' ' + time_left, decimals = 0, length = 20, fill = '#')
 
-    return xformed
+    return xformed, params_all
 
 
 def register_dwi_series(data, gtab, b0_ref=0, pipeline=None, denoise=True,
@@ -273,8 +283,9 @@ def register_dwi_series(data, gtab, b0_ref=0, pipeline=None, denoise=True,
 
     # First, register the b0s to one image and average
     if np.sum(gtab.b0s_mask) > 1:
+        print("Registering lowest B0 images")
         b0_img = data[..., gtab.b0s_mask]
-        trans_b0 = register_series(b0_img, ref=b0_ref,
+        trans_b0, params_b0 = register_series(b0_img, ref=b0_ref,
                                    pipeline=pipeline,
                                    denoise=denoise,
                                    static_mask=static_mask,
@@ -286,12 +297,13 @@ def register_dwi_series(data, gtab, b0_ref=0, pipeline=None, denoise=True,
         ref_data = np.squeeze(trans_b0, axis=-1)
 
     # Second, register all images to ref_data  
-    xformed = register_series(data, ref_data,
+    print("Registering all images")
+    xformed, params = register_series(data, ref_data,
                               pipeline=pipeline,
                               denoise=denoise,
                               static_mask=static_mask,
                               verbose=verbose,
                               iterations=iterations)
 
-    return xformed 
+    return xformed, params
 

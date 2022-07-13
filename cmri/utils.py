@@ -108,7 +108,7 @@ def get_colors(color):
 
     # colors needed for plotting
     
-    if color in  ['fa', 'md', 's0', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a']:
+    if color in  ['fa', 'md', 'ha', 'hap', 'ia', 'ta', 'aa', 'e2a']:
         if color in ["ha", "hap"]:
             cturbo = cyclic_turbo(deg=60)
             cmap, vmin, vmax = cturbo, -90.0, +90.0

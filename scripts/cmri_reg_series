@@ -1,6 +1,9 @@
 #!python
 """Script for registering an image series."""
 
+import signal
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 import argparse
 import numpy as np
 
@@ -19,7 +22,7 @@ def main(args):
     flnm = utils.Filename(args.filename, args.bfile, args.ext)
 
     # load data (could load with sitk and convert to NumPy)
-    data, affine, img = load_nifti(flnm.filename, return_img = True)
+    data, affine = load_nifti(flnm.filename)
     print("data shape:", data.shape)
     print("affine matrix:", affine)
 
@@ -46,7 +49,7 @@ def main(args):
 
             # use space bar to toggle image that will be used as reference
             tmp = [{"values": data_slice[:, :, gtab.b0s_mask][..., bdx], "name": "gray"} for bdx in range(gtab.b0s_mask.sum())]
-            masks[:, :, sdx], b0refs[sdx] = Select_mask(tmp).run()
+            masks[:, :, sdx], b0refs[sdx] = Select_mask(tmp).run(rectangle=True)
 
         # save masks
         if len(slice_list) < data.shape[2]:
@@ -62,6 +65,7 @@ def main(args):
 
         # array for storing results
         reg_data = np.zeros([data.shape[0], data.shape[1], len(slice_list), data.shape[3]])
+        params = np.zeros([len(slice_list), data.shape[3], 5])  # record rigid transform info
 
         # load masks
         if len(slice_list) == data.shape[2]:
@@ -83,9 +87,7 @@ def main(args):
             mask = masks[:, :, sdx]
             b0ref = int(b0refs[sdx])
 
-            # FIXME: need option for pipeline=['rigid', 'affine']
-            # FIXME: need to record the reg params when registering series
-            reg_data[:, :, sdx, :] = register_dwi_series(data_slice, gtab=gtab, b0_ref=b0ref,\
+            reg_data[:, :, sdx, :], params[sdx, :, :] = register_dwi_series(data_slice, gtab=gtab, b0_ref=b0ref,\
                                            denoise=True, static_mask=mask,\
                                            pipeline=pipeline,\
                                            verbose=args.verbose,\
@@ -94,8 +96,10 @@ def main(args):
         # save registered images 
         if len(slice_list) < data.shape[2]:
             save_nifti(flnm.new("reg_" + str(slice_index)), reg_data, affine)
+            np.save(flnm.new("reg_params_" + str(sdx), "npy"), params)
         else:
             save_nifti(flnm.new("reg"), reg_data, affine)
+            np.save(flnm.new("reg_params", "npy"), params)
 
 
 if __name__ == "__main__":
@@ -133,3 +137,6 @@ if __name__ == "__main__":
 
     main(args)
 
+#    # throw away data to speed up the process for testing
+#    data = data[..., 0:20]
+#    bvals, bvecs = bvals[0:20], bvecs[0:20, ...]
